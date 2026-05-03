@@ -1,8 +1,16 @@
-"""Claude API integration for claude-design-mcp.
+"""Claude Agent SDK integration for claude-design-mcp.
 
-Wraps Anthropic's async client. The DESIGN_SYSTEM_PROMPT is sent with
-``cache_control: {"type": "ephemeral"}`` so it is paid for once per ~5-minute
-window and reused across all subsequent calls — keeping iteration cheap.
+This module routes design generation through ``claude_agent_sdk.query()``,
+which spawns the local ``claude`` CLI as a subprocess. That means design
+calls inherit *whatever* OAuth login Claude Code is currently using —
+no ``ANTHROPIC_API_KEY`` needed, no separate billing pool, no extra
+credential management. If you can run ``claude`` interactively, this
+package can call Claude.
+
+We deliberately disable Claude Code's tool surface for these calls
+(``allowed_tools=[]``, ``permission_mode="bypassPermissions"``,
+``max_turns=1``) so a design generation is exactly that — one turn of
+text-out, no filesystem access, no shell, no MCP recursion.
 """
 
 from __future__ import annotations
@@ -15,16 +23,16 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
-from anthropic import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AsyncAnthropic,
-    AuthenticationError,
-    BadRequestError,
-    RateLimitError,
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKError,
+    CLIConnectionError,
+    CLINotFoundError,
+    ResultMessage,
+    TextBlock,
+    query,
 )
-from anthropic.types import Message, MessageParam
 
 from . import prompts
 
@@ -50,13 +58,6 @@ def _env_model_best() -> str:
 DEFAULT_MODEL_FAST = _env_model_fast()
 DEFAULT_MODEL_BEST = _env_model_best()
 
-# Generous max_tokens — designs are large (HTML + inline CSS often exceeds
-# 4k tokens). Anthropic clamps this server-side based on the model.
-MAX_TOKENS = 16000
-
-# Hard cap on a single API call. Designs aren't worth waiting forever for.
-DEFAULT_REQUEST_TIMEOUT_S = 180.0
-
 # Caps on the metadata block we accept from the model. These prevent a
 # prompt-injected response from ballooning the SQLite row.
 _META_STRING_MAX = 8 * 1024
@@ -66,6 +67,10 @@ _META_DEPTH_MAX = 8
 # Cap on per-design HTML we forward into a multi-design prompt (extract_system).
 # 8000 chars ≈ 2k tokens; 10 designs × 2k = 20k tokens budget for inputs.
 _EXTRACT_HTML_PER_DESIGN_MAX = 8000
+
+# Wall-clock cap on a single SDK query. Designs can be slow, but waiting
+# forever on a stuck CLI subprocess is worse than failing fast.
+DEFAULT_QUERY_TIMEOUT_S = 240.0
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +89,8 @@ class DesignDraft:
     input_tokens: int = 0
     output_tokens: int = 0
     model: str = ""
+    cost_usd: float | None = None
+    duration_ms: int = 0
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -121,32 +128,49 @@ class DesignDraft:
 
 
 class DesignerError(RuntimeError):
-    """Raised when the model returns something we can't parse."""
+    """Raised when the model returns something we can't parse, or auth fails."""
+
+
+# Map ``AssistantMessage.error`` enum values to caller-friendly explanations.
+_ASSISTANT_ERROR_MESSAGES = {
+    "authentication_failed": (
+        "Claude Code isn't logged in. Run `claude login` (or open Claude Code "
+        "and sign in) to grant the design MCP an OAuth session."
+    ),
+    "billing_error": (
+        "Claude Code reported a billing problem. Check your subscription / "
+        "credit balance in the Claude account that's currently logged in."
+    ),
+    "rate_limit": (
+        "Claude rate-limited the request. Wait a few seconds and retry, or "
+        "lower `count` on design_variants."
+    ),
+    "invalid_request": (
+        "Claude rejected the request. Try a more concrete brief or smaller scope."
+    ),
+    "server_error": "Claude server error; try again shortly.",
+    "unknown": "Claude returned an unspecified error; check the MCP server log.",
+}
 
 
 class Designer:
-    """High-level wrapper around Anthropic's async client for design generation."""
+    """High-level wrapper around the Claude Agent SDK for design generation.
+
+    Construction does no I/O — instances are cheap. The first call to a
+    public method spawns the ``claude`` CLI subprocess.
+    """
 
     def __init__(
         self,
-        api_key: str | None = None,
         *,
         fast_model: str | None = None,
         best_model: str | None = None,
-        max_tokens: int = MAX_TOKENS,
-        request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
+        query_timeout_s: float = DEFAULT_QUERY_TIMEOUT_S,
     ) -> None:
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            raise DesignerError(
-                "ANTHROPIC_API_KEY is not set. Add it to your shell environment "
-                "or a .env file next to the studio root."
-            )
-        self._client = AsyncAnthropic(api_key=key, timeout=request_timeout_s, max_retries=2)
         # Re-read env on construction so .env edits / monkeypatches take effect.
         self._fast_model = fast_model or _env_model_fast()
         self._best_model = best_model or _env_model_best()
-        self._max_tokens = max_tokens
+        self._query_timeout_s = query_timeout_s
 
     # -- Public surface ----------------------------------------------------
 
@@ -188,6 +212,7 @@ class Designer:
         tier: str = "fast",
     ) -> list[DesignDraft]:
         """Generate `count` variants in parallel."""
+
         async def one(i: int) -> DesignDraft:
             user_msg = prompts.variants_user_prompt(
                 base_brief=base_brief,
@@ -205,15 +230,14 @@ class Designer:
         self, *, designs: list[dict], tier: str = "fast"
     ) -> dict[str, Any]:
         """Return a parsed design-system JSON object."""
-        # Cap each design's HTML so a few large designs can't blow the prompt.
         capped = [
             {**d, "html": (d.get("html") or "")[:_EXTRACT_HTML_PER_DESIGN_MAX]}
             for d in designs
         ]
         user_msg = prompts.extract_system_user_prompt(designs=capped)
-        # System extraction returns *only* JSON — bypass the HTML parser.
-        message = await self._raw_call(model=self._pick_model(tier), user=user_msg)
-        text = _join_text(message)
+        text, _ = await self._raw_query(
+            model=self._pick_model(tier), user=user_msg
+        )
         json_block = _extract_json_block(text)
         if not json_block:
             raise DesignerError(
@@ -224,8 +248,6 @@ class Designer:
             parsed = json.loads(json_block)
         except json.JSONDecodeError as e:
             raise DesignerError(f"Extracted JSON was not valid: {e}") from e
-        # _clamp_metadata caps strings, list lengths, and depth; the recursive
-        # walk is bounded by those caps regardless of input size.
         return _clamp_metadata(parsed)
 
     async def apply_system(
@@ -236,7 +258,9 @@ class Designer:
         mode: str,
         tier: str = "fast",
     ) -> DesignDraft:
-        user_msg = prompts.apply_system_user_prompt(system=system, brief=brief, mode=mode)
+        user_msg = prompts.apply_system_user_prompt(
+            system=system, brief=brief, mode=mode
+        )
         return await self._call(model=self._pick_model(tier), user=user_msg)
 
     # -- Internals ---------------------------------------------------------
@@ -245,8 +269,7 @@ class Designer:
         return self._best_model if tier == "best" else self._fast_model
 
     async def _call(self, *, model: str, user: str) -> DesignDraft:
-        message = await self._raw_call(model=model, user=user)
-        text = _join_text(message)
+        text, telemetry = await self._raw_query(model=model, user=user)
         html = _extract_html_block(text)
         meta_raw = _extract_json_block(text)
         warnings: list[str] = []
@@ -266,65 +289,106 @@ class Designer:
             warnings.append("model did not return a metadata JSON block")
             metadata = {}
 
-        usage = message.usage
         return DesignDraft(
             html=html,
             metadata=metadata,
-            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-            input_tokens=usage.input_tokens or 0,
-            output_tokens=usage.output_tokens or 0,
-            model=model,
+            cache_creation_tokens=telemetry.get("cache_creation_input_tokens", 0),
+            cache_read_tokens=telemetry.get("cache_read_input_tokens", 0),
+            input_tokens=telemetry.get("input_tokens", 0),
+            output_tokens=telemetry.get("output_tokens", 0),
+            cost_usd=telemetry.get("cost_usd"),
+            duration_ms=telemetry.get("duration_ms", 0),
+            model=telemetry.get("model") or model,
             warnings=warnings,
         )
 
-    async def _raw_call(self, *, model: str, user: str) -> Message:
-        # System prompt is sent as a list with cache_control so subsequent calls
-        # within ~5 minutes of each other read the cache instead of paying again.
-        system_block = [
-            {
-                "type": "text",
-                "text": prompts.DESIGN_SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
-        messages: list[MessageParam] = [{"role": "user", "content": user}]
+    async def _raw_query(
+        self, *, model: str, user: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Run a single one-turn query through the SDK.
+
+        Returns (joined text, telemetry-dict). Raises ``DesignerError`` for
+        every failure mode the caller might care about, with a message that
+        guides the operator toward a fix.
+        """
+        options = ClaudeAgentOptions(
+            model=model,
+            system_prompt=prompts.DESIGN_SYSTEM_PROMPT,
+            allowed_tools=[],
+            permission_mode="bypassPermissions",
+            max_turns=1,
+            # Don't pollute the design call with skills/agents the user has
+            # configured for normal Claude Code use.
+            skills=None,
+            setting_sources=None,
+        )
+
+        text_chunks: list[str] = []
+        telemetry: dict[str, Any] = {}
+        assistant_seen = False
+
+        async def _consume() -> None:
+            nonlocal assistant_seen
+            async for msg in query(prompt=user, options=options):
+                if isinstance(msg, AssistantMessage):
+                    assistant_seen = True
+                    if msg.error:
+                        raise DesignerError(
+                            _ASSISTANT_ERROR_MESSAGES.get(
+                                msg.error, _ASSISTANT_ERROR_MESSAGES["unknown"]
+                            )
+                        )
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            text_chunks.append(block.text)
+                    if msg.usage:
+                        telemetry.update(msg.usage)
+                    if msg.model:
+                        telemetry.setdefault("model", msg.model)
+                elif isinstance(msg, ResultMessage):
+                    if msg.is_error:
+                        # ResultMessage.errors is a list[str]; surface the first.
+                        joined = "; ".join(msg.errors or []) or "unknown error"
+                        raise DesignerError(f"Claude returned an error: {joined}")
+                    if msg.usage:
+                        # ResultMessage.usage is the canonical token count.
+                        telemetry.update(msg.usage)
+                    if msg.total_cost_usd is not None:
+                        telemetry["cost_usd"] = msg.total_cost_usd
+                    telemetry["duration_ms"] = msg.duration_ms
+
         try:
-            return await self._client.messages.create(
-                model=model,
-                max_tokens=self._max_tokens,
-                system=system_block,  # type: ignore[arg-type]  # SDK accepts list-of-blocks
-                messages=messages,
-            )
-        except AuthenticationError as e:
+            await asyncio.wait_for(_consume(), timeout=self._query_timeout_s)
+        except asyncio.TimeoutError as e:
             raise DesignerError(
-                "Anthropic authentication failed. Check that ANTHROPIC_API_KEY is "
-                "valid and not expired."
-            ) from e
-        except RateLimitError as e:
-            raise DesignerError(
-                "Anthropic rate limit hit. Wait a few seconds and retry, or lower "
-                "`count` on design_variants."
-            ) from e
-        except BadRequestError as e:
-            # 400 covers: insufficient credits, invalid model id, invalid params.
-            msg = _extract_api_message(e) or str(e)
-            raise DesignerError(f"Anthropic rejected the request: {msg}") from e
-        except APITimeoutError as e:
-            raise DesignerError(
-                f"Anthropic API timed out after {self._client.timeout}s. "
+                f"Claude did not respond within {self._query_timeout_s:.0f}s. "
                 "Try the `fast` tier or a tighter brief."
             ) from e
-        except APIConnectionError as e:
+        except CLINotFoundError as e:
             raise DesignerError(
-                "Could not reach the Anthropic API. Check your network connection "
-                "and any proxy/VPN settings."
+                "The `claude` CLI was not found on PATH. Install Claude Code "
+                "(https://docs.claude.com/en/docs/claude-code/) and run "
+                "`claude login` to authorize it."
             ) from e
-        except APIStatusError as e:
-            msg = _extract_api_message(e) or str(e)
+        except CLIConnectionError as e:
             raise DesignerError(
-                f"Anthropic API error (status {e.status_code}): {msg}"
+                "Could not connect to the `claude` CLI subprocess. Check that "
+                "Claude Code launches normally with `claude --version`."
             ) from e
+        except DesignerError:
+            raise
+        except ClaudeSDKError as e:
+            raise DesignerError(
+                f"Claude Agent SDK error: {type(e).__name__}: {e}"
+            ) from e
+
+        if not assistant_seen:
+            raise DesignerError(
+                "Claude returned no assistant response. The CLI may have "
+                "rejected the prompt or the OAuth session expired — try "
+                "`claude login` and retry."
+            )
+        return "".join(text_chunks), telemetry
 
 
 # ---------------------------------------------------------------------------
@@ -332,22 +396,13 @@ class Designer:
 # ---------------------------------------------------------------------------
 
 
-def _join_text(message: Any) -> str:
-    """Concatenate all text content blocks from a Messages API response."""
-    parts: list[str] = []
-    for block in getattr(message, "content", []) or []:
-        # Anthropic SDK returns typed content blocks; text blocks have .text.
-        text = getattr(block, "text", None)
-        if isinstance(text, str):
-            parts.append(text)
-        elif isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
-    return "".join(parts)
-
-
 # CRLF-tolerant fences: many sources emit \r\n.
-_HTML_FENCE_RE = re.compile(r"```(?:html|HTML)[ \t]*\r?\n(.*?)\r?\n```", re.DOTALL)
-_JSON_FENCE_RE = re.compile(r"```(?:json|JSON)[ \t]*\r?\n(.*?)\r?\n```", re.DOTALL)
+_HTML_FENCE_RE = re.compile(
+    r"```(?:html|HTML)[ \t]*\r?\n(.*?)\r?\n```", re.DOTALL
+)
+_JSON_FENCE_RE = re.compile(
+    r"```(?:json|JSON)[ \t]*\r?\n(.*?)\r?\n```", re.DOTALL
+)
 # Match a full document either via <!doctype html>...</html> or a bare <html>...</html>.
 _DOC_RE = re.compile(
     r"(<!doctype\s+html[^>]*>\s*<html[^>]*>.*?</html>|<html[^>]*>.*?</html>)",
@@ -380,33 +435,6 @@ def _extract_json_block(text: str) -> str | None:
     return matches[-1].strip()
 
 
-def _extract_api_message(err: APIStatusError) -> str | None:
-    """Pull the human-readable message out of an Anthropic error response.
-
-    Narrowly catches the attribute-shape errors we know can happen when the
-    SDK changes its body representation; anything else propagates so it gets
-    logged at the caller boundary instead of being silently swallowed.
-    """
-    try:
-        body = getattr(err, "body", None) or {}
-        if isinstance(body, dict):
-            inner = body.get("error") or {}
-            if isinstance(inner, dict):
-                msg = inner.get("message")
-                if isinstance(msg, str):
-                    return msg
-        msg = getattr(err, "message", None)
-        if isinstance(msg, str):
-            return msg
-    except (AttributeError, TypeError, KeyError) as e:
-        print(
-            f"[claude-design-mcp] _extract_api_message: {type(e).__name__}: {e}",
-            file=sys.stderr,
-            flush=True,
-        )
-    return None
-
-
 def _clamp_metadata(value: Any, _depth: int = 0) -> Any:
     """Recursively cap string lengths, list lengths, and nesting depth.
 
@@ -420,10 +448,8 @@ def _clamp_metadata(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, list):
         return [_clamp_metadata(v, _depth + 1) for v in value[:_META_LIST_MAX]]
     if isinstance(value, dict):
-        # Cap key set count too — same _META_LIST_MAX.
         keys = list(value.keys())[:_META_LIST_MAX]
         return {str(k)[:128]: _clamp_metadata(value[k], _depth + 1) for k in keys}
     if isinstance(value, (int, float, bool)) or value is None:
         return value
-    # Anything else (sets, custom objects) becomes a truncated repr.
     return repr(value)[:_META_STRING_MAX]

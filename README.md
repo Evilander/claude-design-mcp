@@ -28,29 +28,36 @@ huge HTML blobs. You can't compare three takes side-by-side. You can't say
 
 This MCP fixes all of that.
 
+## Authentication
+
+claude-design-mcp uses your **existing Claude Code OAuth login** — no
+`ANTHROPIC_API_KEY`, no separate billing. Every model call is routed
+through the local `claude` CLI via the
+[Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/python),
+inheriting whatever OAuth session Claude Code is currently using.
+
+If `claude` runs interactively for you, this server can call Claude.
+
 ## Install
 
 ```powershell
-# From this directory:
+# 1. Install Claude Code (https://docs.claude.com/en/docs/claude-code/)
+#    and log in:
+claude login
+
+# 2. From this repo's directory:
 pip install -e .
 
-# Optional: enable screenshot rendering
+# 3. Optional: enable screenshot rendering
 pip install -e ".[render]"
 playwright install chromium
-```
 
-Set your API key:
-
-```powershell
-copy .env.example .env
-# then edit .env and put your ANTHROPIC_API_KEY in
-```
-
-Verify the install:
-
-```powershell
+# 4. Verify everything is wired up
 claude-design-mcp --check
 ```
+
+`--check` reports the studio dir, Playwright availability, and the
+`claude` CLI version + path. There is no API key to set.
 
 ## Wire it into Claude Code
 
@@ -63,23 +70,6 @@ Add to `~/.claude/settings.json` under `mcpServers`:
       "command": "claude-design-mcp",
       "args": [],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-..."
-      }
-    }
-  }
-}
-```
-
-Or via the Python module form:
-
-```json
-{
-  "mcpServers": {
-    "claude-design": {
-      "command": "python",
-      "args": ["-m", "claude_design"],
-      "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-...",
         "CLAUDE_DESIGN_STUDIO_DIR": "${HOME}/.claude-design/studio"
       }
     }
@@ -87,7 +77,8 @@ Or via the Python module form:
 }
 ```
 
-See `claude_desktop_config.example.json` for a Claude Desktop variant.
+No env block at all is also fine — every variable has a default. See
+`claude_desktop_config.example.json` for a Claude Desktop variant.
 
 ## Usage examples
 
@@ -101,8 +92,8 @@ Once wired up, just ask Claude:
 ## How it works
 
 ```
-brief ─▶ designer.py ─▶ Anthropic Messages API ─▶ HTML + JSON metadata
-                              (system prompt cached via cache_control)
+brief ─▶ designer.py ─▶ claude_agent_sdk.query() ─▶ HTML + JSON metadata
+                              (subprocesses the `claude` CLI; OAuth-backed)
                                           │
                                           ▼
               studio.py ◀─ persistence ─◀ DesignDraft
@@ -114,19 +105,22 @@ brief ─▶ designer.py ─▶ Anthropic Messages API ─▶ HTML + JSON metada
          studio/designs.db               ◀─ index + lineage
 ```
 
-The system prompt is sent with `cache_control: {"type": "ephemeral"}`. The
-first call pays for ~2-3k tokens of design instructions; every call within the
-next ~5 minutes reads from the cache for a fraction of the cost.
+Each call sets `allowed_tools=[]`, `permission_mode="bypassPermissions"`,
+and `max_turns=1` so a design generation is exactly that — one turn of
+text-out, no filesystem access, no shell access, no MCP recursion. The
+warm Playwright browser amortizes Chromium launch cost across renders.
 
 ## Configuration
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | — | Required. |
 | `CLAUDE_DESIGN_MODEL` | `claude-sonnet-4-6` | Fast tier model. |
 | `CLAUDE_DESIGN_MODEL_OPUS` | `claude-opus-4-7` | Best tier model. |
 | `CLAUDE_DESIGN_STUDIO_DIR` | `./studio` | Where designs live. |
 | `CLAUDE_DESIGN_AUTO_RENDER` | `auto` | `1`/`0`/`auto` — auto screenshot on create/iterate. |
+
+Authentication comes from the local `claude` CLI's OAuth session — there
+is no API-key env var to set.
 
 ## License
 

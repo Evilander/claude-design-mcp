@@ -1,25 +1,12 @@
 """Unit tests for the designer's response parser.
 
-These tests don't hit the API — they exercise ``_extract_html_block`` and
-``_extract_json_block`` directly, plus the API-error translation helper.
+These tests don't hit the SDK — they exercise ``_extract_html_block`` and
+``_extract_json_block`` directly.
 """
 
 from __future__ import annotations
 
-import pytest
-
-from claude_design.designer import (
-    _extract_api_message,
-    _extract_html_block,
-    _extract_json_block,
-)
-
-
-class _FakeStatusError:
-    def __init__(self, body=None, message=None, status_code=400):
-        self.body = body
-        self.message = message
-        self.status_code = status_code
+from claude_design.designer import _extract_html_block, _extract_json_block
 
 
 GOOD_RESPONSE = """\
@@ -56,21 +43,6 @@ def test_extract_html_block_returns_none_when_missing():
 
 def test_extract_json_block_returns_none_when_missing():
     assert _extract_json_block("no fences") is None
-
-
-def test_extract_api_message_pulls_nested_message():
-    err = _FakeStatusError(body={"error": {"message": "credit balance too low"}})
-    assert _extract_api_message(err) == "credit balance too low"
-
-
-def test_extract_api_message_falls_back_to_attribute():
-    err = _FakeStatusError(body={}, message="fallback")
-    assert _extract_api_message(err) == "fallback"
-
-
-def test_extract_api_message_returns_none_when_blank():
-    err = _FakeStatusError(body=None, message=None)
-    assert _extract_api_message(err) is None
 
 
 def test_html_fence_is_case_insensitive():
