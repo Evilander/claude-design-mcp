@@ -1057,6 +1057,37 @@ def _err(msg: str) -> str:
     return json.dumps({"error": msg}, indent=2)
 
 
+def _claude_cli_status() -> dict[str, Any]:
+    """Probe the local `claude` CLI for `--check` to report on it.
+
+    Returns dict with keys ``ok`` (bool) and ``line`` (printable status).
+    """
+    import subprocess
+
+    found = shutil.which("claude") or shutil.which("claude.exe")
+    if not found:
+        return {
+            "ok": False,
+            "line": (
+                "NOT FOUND on PATH — install Claude Code "
+                "(https://docs.claude.com/en/docs/claude-code/) and run "
+                "`claude login`."
+            ),
+        }
+    try:
+        out = subprocess.run(
+            [found, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return {"ok": False, "line": f"FOUND at {found} but failed to run ({e})"}
+    version = (out.stdout or out.stderr or "").strip().splitlines()[:1]
+    version_str = version[0] if version else "(unknown version)"
+    return {"ok": True, "line": f"{version_str} ({found})"}
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -1093,10 +1124,13 @@ def main() -> None:
             print(f"studio dir   : INVALID — {e}", file=sys.stderr)
             sys.exit(1)
         print(f"studio dir   : {resolved}", file=sys.stderr)
-        print(f"playwright   : {'yes' if Renderer.is_available() else 'no'}", file=sys.stderr)
-        api = bool(os.environ.get("ANTHROPIC_API_KEY"))
-        print(f"api key set  : {'yes' if api else 'NO — set ANTHROPIC_API_KEY'}", file=sys.stderr)
-        if not api:
+        print(
+            f"playwright   : {'yes' if Renderer.is_available() else 'no'}",
+            file=sys.stderr,
+        )
+        cli_status = _claude_cli_status()
+        print(f"claude CLI   : {cli_status['line']}", file=sys.stderr)
+        if not cli_status["ok"]:
             ok = False
         # Touch the studio so any FS issues surface
         try:

@@ -4,7 +4,6 @@
       "command": "claude-design-mcp",
       "args": [],
       "env": {
-        "ANTHROPIC_API_KEY": "sk-ant-REPLACE-ME",
         "CLAUDE_DESIGN_STUDIO_DIR": "${HOME}/.claude-design/studio",
         "CLAUDE_DESIGN_MODEL": "claude-sonnet-4-6",
         "CLAUDE_DESIGN_MODEL_OPUS": "claude-opus-4-7",
