@@ -8,7 +8,7 @@ credential management. If you can run ``claude`` interactively, this
 package can call Claude.
 
 We deliberately disable Claude Code's tool surface for these calls
-(``allowed_tools=[]``, ``permission_mode="bypassPermissions"``,
+(``tools=[]``, ``permission_mode="dontAsk"``,
 ``max_turns=1``) so a design generation is exactly that — one turn of
 text-out, no filesystem access, no shell, no MCP recursion.
 """
@@ -71,6 +71,44 @@ _EXTRACT_HTML_PER_DESIGN_MAX = 8000
 # Wall-clock cap on a single SDK query. Designs can be slow, but waiting
 # forever on a stuck CLI subprocess is worse than failing fast.
 DEFAULT_QUERY_TIMEOUT_S = 240.0
+DEFAULT_MAX_BUFFER_SIZE = 8 * 1024 * 1024
+
+_ALLOWED_EFFORTS = {"low", "medium", "high", "max"}
+
+
+def _env_effort() -> str | None:
+    raw = (os.environ.get("CLAUDE_DESIGN_EFFORT") or "low").strip().lower()
+    if raw in {"", "none", "off", "0", "false", "no"}:
+        return None
+    if raw not in _ALLOWED_EFFORTS:
+        return "low"
+    return raw
+
+
+def _env_thinking() -> dict[str, str] | None:
+    raw = (os.environ.get("CLAUDE_DESIGN_THINKING") or "disabled").strip().lower()
+    if raw in {"", "none", "off"}:
+        return None
+    if raw in {"adaptive", "auto"}:
+        return {"type": "adaptive"}
+    if raw in {"disabled", "0", "false", "no"}:
+        return {"type": "disabled"}
+    return {"type": "disabled"}
+
+
+def _env_max_buffer_size() -> int:
+    raw = os.environ.get("CLAUDE_DESIGN_MAX_BUFFER_BYTES")
+    if not raw:
+        return DEFAULT_MAX_BUFFER_SIZE
+    try:
+        return max(1024 * 1024, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_BUFFER_SIZE
+
+
+def _env_cli_path() -> str | None:
+    raw = (os.environ.get("CLAUDE_DESIGN_CLI_PATH") or "").strip()
+    return raw or None
 
 
 # ---------------------------------------------------------------------------
@@ -311,16 +349,41 @@ class Designer:
         every failure mode the caller might care about, with a message that
         guides the operator toward a fix.
         """
+        stderr_lines: list[str] = []
+
+        def _capture_stderr(line: str) -> None:
+            if len(stderr_lines) < 20:
+                stderr_lines.append(line[:1000])
+
+        def _log_stderr() -> None:
+            if stderr_lines:
+                print(
+                    "[claude-design-mcp] Claude CLI stderr:\n"
+                    + "\n".join(stderr_lines),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
         options = ClaudeAgentOptions(
             model=model,
             system_prompt=prompts.DESIGN_SYSTEM_PROMPT,
+            tools=[],
             allowed_tools=[],
-            permission_mode="bypassPermissions",
+            permission_mode="dontAsk",
             max_turns=1,
-            # Don't pollute the design call with skills/agents the user has
-            # configured for normal Claude Code use.
-            skills=None,
-            setting_sources=None,
+            cli_path=_env_cli_path(),
+            extra_args={
+                "disable-slash-commands": None,
+                "no-session-persistence": None,
+            },
+            max_buffer_size=_env_max_buffer_size(),
+            stderr=_capture_stderr,
+            thinking=_env_thinking(),
+            effort=_env_effort(),
+            # Don't pollute the design call with settings, skills, agents, or
+            # tools the user has configured for normal Claude Code use.
+            skills=[],
+            setting_sources=[],
         )
 
         text_chunks: list[str] = []
@@ -378,6 +441,12 @@ class Designer:
         except DesignerError:
             raise
         except ClaudeSDKError as e:
+            _log_stderr()
+            raise DesignerError(
+                f"Claude Agent SDK error: {type(e).__name__}: {e}"
+            ) from e
+        except Exception as e:
+            _log_stderr()
             raise DesignerError(
                 f"Claude Agent SDK error: {type(e).__name__}: {e}"
             ) from e

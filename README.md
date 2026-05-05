@@ -54,10 +54,13 @@ playwright install chromium
 
 # 4. Verify everything is wired up
 claude-design-mcp --check
+claude-design-mcp --check-json
 ```
 
 `--check` reports the studio dir, Playwright availability, and the
 `claude` CLI version + path. There is no API key to set.
+`--check-json` prints the same readiness signal as machine-readable JSON for
+installers, CI, and support scripts.
 
 ## Wire it into Claude Code
 
@@ -105,10 +108,12 @@ brief ─▶ designer.py ─▶ claude_agent_sdk.query() ─▶ HTML + JSON meta
          studio/designs.db               ◀─ index + lineage
 ```
 
-Each call sets `allowed_tools=[]`, `permission_mode="bypassPermissions"`,
-and `max_turns=1` so a design generation is exactly that — one turn of
-text-out, no filesystem access, no shell access, no MCP recursion. The
-warm Playwright browser amortizes Chromium launch cost across renders.
+Each call sets `tools=[]`, `allowed_tools=[]`, `permission_mode="dontAsk"`,
+`--disable-slash-commands`, `--no-session-persistence`, isolated setting
+sources, and `max_turns=1` so a design generation is exactly that — one turn
+of text-out, no filesystem access, no shell access, no MCP recursion, and no
+conversation persistence. The warm Playwright browser amortizes Chromium launch
+cost across renders.
 
 ## Configuration
 
@@ -118,6 +123,10 @@ warm Playwright browser amortizes Chromium launch cost across renders.
 | `CLAUDE_DESIGN_MODEL_OPUS` | `claude-opus-4-7` | Best tier model. |
 | `CLAUDE_DESIGN_STUDIO_DIR` | `./studio` | Where designs live. |
 | `CLAUDE_DESIGN_AUTO_RENDER` | `auto` | `1`/`0`/`auto` — auto screenshot on create/iterate. |
+| `CLAUDE_DESIGN_CLI_PATH` | auto | Optional explicit path to the `claude` CLI. |
+| `CLAUDE_DESIGN_EFFORT` | `low` | Claude Code effort level for design calls. Use `none` to omit. |
+| `CLAUDE_DESIGN_THINKING` | `disabled` | Thinking mode for design calls: `disabled`, `adaptive`, or `none`. |
+| `CLAUDE_DESIGN_MAX_BUFFER_BYTES` | `8388608` | SDK stdout JSON buffer cap for large HTML responses. |
 
 Authentication comes from the local `claude` CLI's OAuth session — there
 is no API-key env var to set.

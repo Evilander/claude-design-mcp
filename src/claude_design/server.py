@@ -11,7 +11,6 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import shutil
 import sys
 import zipfile
@@ -115,8 +114,8 @@ def _assert_path_safe(p: Path, *, label: str) -> None:
         )
 
 
-# Lazily constructed singletons — instantiating Designer requires an API key,
-# but we want `--help` and `design_list` to work even without one.
+# Lazily constructed singletons — Designer construction does no I/O, but we
+# still keep setup cheap so `--help` and `design_list` work without a model call.
 _studio: Studio | None = None
 _designer: Designer | None = None
 _renderer: Renderer | None = None
@@ -272,8 +271,8 @@ async def design_create(params: DesignCreateInput) -> str:
         - "Newsletter signup card for a literary magazine, editorial layout, serif headlines."
 
     Errors:
-        - "Error: ANTHROPIC_API_KEY not set" — provide an API key in the environment.
-        - "Error: model did not return an HTML block" — retry, possibly with a more concrete brief.
+        - "`claude` CLI was not found" — install Claude Code and run `claude login`.
+        - "model did not return an HTML block" — retry, possibly with a more concrete brief.
     """
     # DesignerError + unexpected exceptions are caught by the @_tool wrapper.
     draft = await designer().generate_design(
@@ -1064,7 +1063,17 @@ def _claude_cli_status() -> dict[str, Any]:
     """
     import subprocess
 
-    found = shutil.which("claude") or shutil.which("claude.exe")
+    configured = (os.environ.get("CLAUDE_DESIGN_CLI_PATH") or "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        found = str(candidate) if candidate.exists() else shutil.which(configured)
+        if not found:
+            return {
+                "ok": False,
+                "line": f"CLAUDE_DESIGN_CLI_PATH is set but not executable: {configured}",
+            }
+    else:
+        found = shutil.which("claude") or shutil.which("claude.exe")
     if not found:
         return {
             "ok": False,
@@ -1088,6 +1097,67 @@ def _claude_cli_status() -> dict[str, Any]:
     return {"ok": True, "line": f"{version_str} ({found})"}
 
 
+def _build_check_report() -> dict[str, Any]:
+    """Build a machine-readable readiness report for humans and automation."""
+    report: dict[str, Any] = {
+        "ok": True,
+        "authentication": {
+            "mode": "claude-code-oauth",
+            "api_key_required": False,
+            "setup": "Run `claude login`; no ANTHROPIC_API_KEY is used.",
+        },
+        "studio_dir": {"ok": True, "path": None, "error": None},
+        "playwright": {"available": Renderer.is_available()},
+        "claude_cli": {},
+        "studio_init": {"ok": True, "error": None},
+    }
+
+    try:
+        resolved = _resolve_studio_dir()
+    except ValueError as e:
+        report["ok"] = False
+        report["studio_dir"] = {"ok": False, "path": None, "error": str(e)}
+        report["studio_init"] = {"ok": False, "error": "studio dir invalid"}
+        return report
+
+    report["studio_dir"] = {"ok": True, "path": str(resolved), "error": None}
+
+    cli_status = _claude_cli_status()
+    report["claude_cli"] = cli_status
+    if not cli_status["ok"]:
+        report["ok"] = False
+
+    try:
+        studio()
+    except OSError as e:
+        report["ok"] = False
+        report["studio_init"] = {"ok": False, "error": str(e)}
+
+    return report
+
+
+def _print_check_report(report: dict[str, Any]) -> None:
+    studio_dir = report["studio_dir"]
+    if studio_dir["ok"]:
+        print(f"studio dir   : {studio_dir['path']}", file=sys.stderr)
+    else:
+        print(f"studio dir   : INVALID — {studio_dir['error']}", file=sys.stderr)
+    print(
+        f"playwright   : {'yes' if report['playwright']['available'] else 'no'}",
+        file=sys.stderr,
+    )
+    print(f"claude CLI   : {report['claude_cli'].get('line', 'not checked')}", file=sys.stderr)
+    print(
+        "auth         : Claude Code OAuth (`claude login`); no API key required",
+        file=sys.stderr,
+    )
+    studio_init = report["studio_init"]
+    if studio_init["ok"]:
+        print("studio init  : ok", file=sys.stderr)
+    else:
+        print(f"studio init  : FAILED — {studio_init['error']}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -1105,6 +1175,11 @@ def main() -> None:
         help="Verify config and exit (does not start the MCP server).",
     )
     parser.add_argument(
+        "--check-json",
+        action="store_true",
+        help="Print machine-readable readiness JSON and exit.",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio"],
@@ -1116,31 +1191,13 @@ def main() -> None:
         os.environ["CLAUDE_DESIGN_STUDIO_DIR"] = args.studio_dir
         _reset_singletons()  # next studio() call re-reads the env
 
-    if args.check:
-        ok = True
-        try:
-            resolved = _resolve_studio_dir()
-        except ValueError as e:
-            print(f"studio dir   : INVALID — {e}", file=sys.stderr)
-            sys.exit(1)
-        print(f"studio dir   : {resolved}", file=sys.stderr)
-        print(
-            f"playwright   : {'yes' if Renderer.is_available() else 'no'}",
-            file=sys.stderr,
-        )
-        cli_status = _claude_cli_status()
-        print(f"claude CLI   : {cli_status['line']}", file=sys.stderr)
-        if not cli_status["ok"]:
-            ok = False
-        # Touch the studio so any FS issues surface
-        try:
-            studio()
-        except OSError as e:
-            print(f"studio init  : FAILED — {e}", file=sys.stderr)
-            ok = False
+    if args.check or args.check_json:
+        report = _build_check_report()
+        if args.check_json:
+            print(json.dumps(report, indent=2, sort_keys=True))
         else:
-            print("studio init  : ok", file=sys.stderr)
-        sys.exit(0 if ok else 1)
+            _print_check_report(report)
+        sys.exit(0 if report["ok"] else 1)
 
     mcp.run()
 
