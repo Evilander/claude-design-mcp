@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from claude_design.designer import _clamp_metadata, _extract_html_block, _extract_json_block
+from claude_design.designer import _clamp_metadata, _extract_html_block
 from claude_design.studio import inject_csp
 
 

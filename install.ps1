@@ -30,7 +30,7 @@ $rc = $LASTEXITCODE
 
 if ($rc -ne 0) {
     Write-Host ""
-    Write-Host "[claude-design-mcp] Setup checks failed. Set ANTHROPIC_API_KEY and re-run --check." -ForegroundColor Yellow
+    Write-Host "[claude-design-mcp] Setup checks failed. Run 'claude login', make sure the 'claude' CLI is on PATH, then re-run --check." -ForegroundColor Yellow
     exit $rc
 }
 
