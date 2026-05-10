@@ -31,6 +31,17 @@ def test_designer_picks_env_models(monkeypatch):
     assert d._best_model == "claude-opus-4-7-test"
 
 
+def test_designer_prefers_path_claude_cli_when_env_absent(monkeypatch):
+    monkeypatch.delenv("CLAUDE_DESIGN_CLI_PATH", raising=False)
+    monkeypatch.setattr(
+        designer_module.shutil,
+        "which",
+        lambda name: "/usr/local/bin/claude" if name == "claude" else None,
+    )
+
+    assert designer_module._env_cli_path() == "/usr/local/bin/claude"
+
+
 def test_assistant_error_messages_cover_all_known_subtypes():
     """Every typed AssistantMessage.error literal must have a friendly message."""
     expected = {
@@ -113,9 +124,27 @@ async def test_designer_sdk_options_are_oauth_only_and_toolless(monkeypatch):
 
 
 def test_design_system_prompt_is_latency_bounded():
-    assert len(DESIGN_SYSTEM_PROMPT) < 5000
+    # 6 KB is the cached-prompt budget: large enough to carry the aesthetic
+    # stance + banned-reflex sections (added 2026-05-10 after the adversarial
+    # review flagged generic AI output), small enough to keep first-token
+    # latency under the 5s target on the fast tier.
+    assert len(DESIGN_SYSTEM_PROMPT) < 6000
     assert "target 12-18 KB" in DESIGN_SYSTEM_PROMPT
     assert "220 lines" in DESIGN_SYSTEM_PROMPT
+
+
+def test_design_system_prompt_carries_aesthetic_stance_and_banned_reflexes():
+    """The post-adversary upgrade must keep the positive posture + the explicit AI-tell ban."""
+    # Positive aesthetic stance — required, not optional
+    assert "Aesthetic stance" in DESIGN_SYSTEM_PROMPT
+    assert "posture" in DESIGN_SYSTEM_PROMPT
+    # One element must dominate
+    assert "one element on the page is the hero" in DESIGN_SYSTEM_PROMPT
+    # Banned reflexes section catches the specific AI-tell patterns
+    assert "Banned reflexes" in DESIGN_SYSTEM_PROMPT
+    assert "01 / 02 / 03" in DESIGN_SYSTEM_PROMPT
+    assert "Equal-weight four-quadrant" in DESIGN_SYSTEM_PROMPT
+    assert "fill the row" in DESIGN_SYSTEM_PROMPT
 
 
 def test_design_system_prompt_preserves_oauth_story():

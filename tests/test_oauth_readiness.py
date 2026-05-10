@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -38,7 +39,17 @@ def test_public_operator_guidance_never_asks_for_anthropic_api_key():
 
 def test_check_report_is_machine_readable_and_oauth_explicit(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_DESIGN_STUDIO_DIR", str(tmp_path / "studio"))
-    monkeypatch.setattr(server.Renderer, "is_available", staticmethod(lambda: False))
+    # Start from a clean env so override detection is deterministic across hosts.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_USE_VERTEX", raising=False)
+    monkeypatch.delenv("CLAUDE_DESIGN_ALLOW_API_KEY", raising=False)
+    monkeypatch.setattr(
+        server.Renderer,
+        "readiness",
+        staticmethod(lambda: {"ready": False, "available": True}),
+    )
     monkeypatch.setattr(
         server,
         "_claude_cli_status",
@@ -50,14 +61,70 @@ def test_check_report_is_machine_readable_and_oauth_explicit(tmp_path, monkeypat
     encoded = json.dumps(report)
 
     assert report["ok"] is True
-    assert report["authentication"] == {
-        "mode": "claude-code-oauth",
-        "api_key_required": False,
-        "setup": "Run `claude login`; no ANTHROPIC_API_KEY is used.",
-    }
+    assert report["authentication"]["mode"] == "claude-code-oauth"
+    assert report["authentication"]["api_key_required"] is False
+    assert "ANTHROPIC_API_KEY" in report["authentication"]["setup"]
+    assert report["authentication"]["env_overrides_present"] == []
+    assert report["authentication"]["env_overrides_scrubbed"] is True
+    assert report["authentication"]["preserve_overrides_env"] == "CLAUDE_DESIGN_ALLOW_API_KEY"
     assert report["studio_init"]["ok"] is True
     assert "ANTHROPIC_API_KEY" in encoded
     assert "api_key_required" in encoded
+
+
+def test_check_report_warns_when_api_key_is_present(tmp_path, monkeypatch):
+    """If ANTHROPIC_API_KEY is set in env, --check must surface that it was scrubbed."""
+    monkeypatch.setenv("CLAUDE_DESIGN_STUDIO_DIR", str(tmp_path / "studio"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-test")
+    monkeypatch.delenv("CLAUDE_DESIGN_ALLOW_API_KEY", raising=False)
+    monkeypatch.setattr(
+        server.Renderer,
+        "readiness",
+        staticmethod(lambda: {"ready": True, "available": True}),
+    )
+    monkeypatch.setattr(
+        server,
+        "_claude_cli_status",
+        lambda: {"ok": True, "line": "Claude Code 2.1.126 (/usr/local/bin/claude)"},
+    )
+    server._reset_singletons()
+
+    report = server._build_check_report()
+
+    assert report["ok"] is True  # overall readiness unaffected
+    assert "ANTHROPIC_API_KEY" in report["authentication"]["env_overrides_present"]
+    assert report["authentication"]["env_overrides_scrubbed"] is True
+
+
+def test_check_report_signals_preserved_override_when_allow_flag_set(tmp_path, monkeypatch):
+    """Power users who set CLAUDE_DESIGN_ALLOW_API_KEY=1 should see the override is live."""
+    monkeypatch.setenv("CLAUDE_DESIGN_STUDIO_DIR", str(tmp_path / "studio"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-test")
+    monkeypatch.setenv("CLAUDE_DESIGN_ALLOW_API_KEY", "1")
+    monkeypatch.setattr(
+        server.Renderer,
+        "readiness",
+        staticmethod(lambda: {"ready": True, "available": True}),
+    )
+    monkeypatch.setattr(
+        server,
+        "_claude_cli_status",
+        lambda: {"ok": True, "line": "Claude Code 2.1.126 (/usr/local/bin/claude)"},
+    )
+    server._reset_singletons()
+
+    report = server._build_check_report()
+
+    assert report["authentication"]["env_overrides_present"] == ["ANTHROPIC_API_KEY"]
+    assert report["authentication"]["env_overrides_scrubbed"] is False
+
+
+def test_resolve_studio_dir_exports_default_for_renderer(monkeypatch):
+    monkeypatch.delenv("CLAUDE_DESIGN_STUDIO_DIR", raising=False)
+
+    resolved = server._resolve_studio_dir()
+
+    assert Path(os.environ["CLAUDE_DESIGN_STUDIO_DIR"]) == resolved
 
 
 def test_claude_cli_status_respects_configured_cli_path(monkeypatch):
@@ -76,3 +143,24 @@ def test_claude_cli_status_reports_bad_configured_cli_path(monkeypatch):
 
     assert status["ok"] is False
     assert "CLAUDE_DESIGN_CLI_PATH is set" in status["line"]
+
+
+def test_render_readiness_error_names_temp_blocker():
+    msg = server._render_readiness_error({
+        "available": True,
+        "temp_dir": {"ok": False, "path": "C:/Temp", "error": "Access denied"},
+    })
+
+    assert "C:/Temp" in msg
+    assert "CLAUDE_DESIGN_PLAYWRIGHT_TMP" in msg
+
+
+def test_render_readiness_error_names_missing_browser():
+    msg = server._render_readiness_error({
+        "available": True,
+        "temp_dir": {"ok": True},
+        "browsers": {"ok": False, "error": "Chromium missing", "hint": "install it"},
+    })
+
+    assert "Chromium missing" in msg
+    assert "install it" in msg

@@ -120,7 +120,7 @@ def _card(d: DesignRecord, studio: Studio) -> str:
     return f"""
       <article class="card" data-meta='{meta_blob}'>
         <a class="frame" href="{_html.escape(href)}" target="_blank" rel="noopener">{thumb}</a>
-        <header>
+        <header class="card-header">
           <h2>{title}</h2>
           <p>{summary}</p>
           <div class="palette">{swatches}</div>

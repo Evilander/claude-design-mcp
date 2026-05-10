@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -108,7 +109,94 @@ def _env_max_buffer_size() -> int:
 
 def _env_cli_path() -> str | None:
     raw = (os.environ.get("CLAUDE_DESIGN_CLI_PATH") or "").strip()
-    return raw or None
+    if raw:
+        return raw
+    return shutil.which("claude") or shutil.which("claude.exe")
+
+
+# Env vars that force the `claude` CLI off OAuth and onto an API/provider path.
+# Setting any of these in the parent shell would mean every design call gets
+# billed against an API account (or a third-party provider) instead of the
+# user's logged-in Claude Code session. claude-design-mcp is documented as
+# OAuth-only, so we scrub them before spawning the subprocess. Users who
+# actually want the API/provider path can set CLAUDE_DESIGN_ALLOW_API_KEY=1.
+_AUTH_OVERRIDE_ENV_VARS: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
+
+
+def _allow_api_key_override() -> bool:
+    raw = (os.environ.get("CLAUDE_DESIGN_ALLOW_API_KEY") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def auth_override_state() -> dict[str, Any]:
+    """Report which auth-override env vars are set in the parent process.
+
+    Used by `--check` to warn operators that an inherited API key would
+    silently route through API billing if the scrub were disabled.
+    """
+    present = [name for name in _AUTH_OVERRIDE_ENV_VARS if os.environ.get(name)]
+    return {
+        "present": present,
+        "scrub_enabled": not _allow_api_key_override(),
+        "allow_override_env": "CLAUDE_DESIGN_ALLOW_API_KEY",
+    }
+
+
+def _build_oauth_safe_env() -> dict[str, str]:
+    """Copy os.environ minus any var that would force the CLI off OAuth.
+
+    If ``CLAUDE_DESIGN_ALLOW_API_KEY=1`` is set we pass the env through
+    unchanged so power users on API/Bedrock/Vertex still work.
+
+    NOTE: This dict is what ``ClaudeAgentOptions.env`` receives, but the SDK
+    *merges* it on top of inherited ``os.environ`` rather than replacing —
+    so passing this alone does NOT remove an inherited ANTHROPIC_API_KEY.
+    The actual scrub happens in :func:`_oauth_only_environ`, which the
+    Designer uses as a process-level context manager around the SDK call.
+    """
+    env = {k: v for k, v in os.environ.items() if v is not None}
+    if _allow_api_key_override():
+        return env
+    for name in _AUTH_OVERRIDE_ENV_VARS:
+        env.pop(name, None)
+    return env
+
+
+from contextlib import contextmanager  # noqa: E402 — grouped with helpers above
+
+
+@contextmanager
+def _oauth_only_environ():
+    """Temporarily remove auth-override env vars from ``os.environ``.
+
+    The Claude Agent SDK merges its ``options.env`` on top of the inherited
+    process environment, so an ANTHROPIC_API_KEY set in the parent still
+    flows into the spawned ``claude`` CLI even if we omit it from
+    ``options.env``. Mutating the real process env for the duration of the
+    SDK call is the only reliable way to force OAuth.
+
+    The mutation is restored on exit, including on exception. Concurrent
+    SDK calls in the same process share the same env, which is fine here
+    because we always restore the same key set — the worst that can happen
+    is one call restores an already-restored key.
+    """
+    if _allow_api_key_override():
+        yield
+        return
+    saved: dict[str, str] = {}
+    try:
+        for name in _AUTH_OVERRIDE_ENV_VARS:
+            if name in os.environ:
+                saved[name] = os.environ.pop(name)
+        yield
+    finally:
+        for name, value in saved.items():
+            os.environ[name] = value
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +246,19 @@ class DesignDraft:
     @property
     def notes(self) -> str | None:
         return self.metadata.get("notes")
+
+
+@dataclass
+class VariantDraftResult:
+    """One requested variant: either a parsed draft or a caller-safe error."""
+
+    index: int
+    draft: DesignDraft | None = None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.draft is not None
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +349,8 @@ class Designer:
         base_html: str | None,
         base_meta: dict | None,
         tier: str = "fast",
-    ) -> list[DesignDraft]:
-        """Generate `count` variants in parallel."""
+    ) -> list[VariantDraftResult]:
+        """Generate `count` variants in parallel, preserving partial successes."""
 
         async def one(i: int) -> DesignDraft:
             user_msg = prompts.variants_user_prompt(
@@ -262,7 +363,22 @@ class Designer:
             )
             return await self._call(model=self._pick_model(tier), user=user_msg)
 
-        return await asyncio.gather(*(one(i) for i in range(count)))
+        results = await asyncio.gather(
+            *(one(i) for i in range(count)),
+            return_exceptions=True,
+        )
+        out: list[VariantDraftResult] = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                out.append(
+                    VariantDraftResult(
+                        index=i,
+                        error=f"{type(result).__name__}: {result}",
+                    )
+                )
+            else:
+                out.append(VariantDraftResult(index=i, draft=result))
+        return out
 
     async def extract_system(
         self, *, designs: list[dict], tier: str = "fast"
@@ -372,6 +488,11 @@ class Designer:
             permission_mode="dontAsk",
             max_turns=1,
             cli_path=_env_cli_path(),
+            # Scrub ANTHROPIC_API_KEY / auth overrides so the spawned CLI
+            # falls back to its OAuth session. This is the documented
+            # contract — README states "ANTHROPIC_API_KEY is ignored" —
+            # and without this scrub the CLI silently bills via API mode.
+            env=_build_oauth_safe_env(),
             extra_args={
                 "disable-slash-commands": None,
                 "no-session-persistence": None,
@@ -392,36 +513,57 @@ class Designer:
 
         async def _consume() -> None:
             nonlocal assistant_seen
-            async for msg in query(prompt=user, options=options):
-                if isinstance(msg, AssistantMessage):
-                    assistant_seen = True
-                    if msg.error:
-                        raise DesignerError(
-                            _ASSISTANT_ERROR_MESSAGES.get(
-                                msg.error, _ASSISTANT_ERROR_MESSAGES["unknown"]
-                            )
-                        )
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            text_chunks.append(block.text)
-                    if msg.usage:
-                        telemetry.update(msg.usage)
-                    if msg.model:
-                        telemetry.setdefault("model", msg.model)
-                elif isinstance(msg, ResultMessage):
-                    if msg.is_error:
-                        # ResultMessage.errors is a list[str]; surface the first.
-                        joined = "; ".join(msg.errors or []) or "unknown error"
-                        raise DesignerError(f"Claude returned an error: {joined}")
-                    if msg.usage:
-                        # ResultMessage.usage is the canonical token count.
-                        telemetry.update(msg.usage)
-                    if msg.total_cost_usd is not None:
-                        telemetry["cost_usd"] = msg.total_cost_usd
-                    telemetry["duration_ms"] = msg.duration_ms
+            # Hold an explicit handle to the async generator so we can
+            # aclose() it on cancellation / timeout. Without this, the
+            # underlying `claude` CLI subprocess can survive the parent
+            # task being cancelled — accumulating zombies over time.
+            agen = query(prompt=user, options=options)
+            try:
+                async for msg in agen:
+                    if isinstance(msg, AssistantMessage):
+                        await _handle_assistant(msg)
+                    elif isinstance(msg, ResultMessage):
+                        if msg.is_error:
+                            joined = "; ".join(msg.errors or []) or "unknown error"
+                            raise DesignerError(f"Claude returned an error: {joined}")
+                        if msg.usage:
+                            telemetry.update(msg.usage)
+                        if msg.total_cost_usd is not None:
+                            telemetry["cost_usd"] = msg.total_cost_usd
+                        telemetry["duration_ms"] = msg.duration_ms
+            finally:
+                try:
+                    await agen.aclose()
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    pass
+
+        async def _handle_assistant(msg: AssistantMessage) -> None:
+            nonlocal assistant_seen
+            assistant_seen = True
+            if msg.error:
+                raise DesignerError(
+                    _ASSISTANT_ERROR_MESSAGES.get(
+                        msg.error, _ASSISTANT_ERROR_MESSAGES["unknown"]
+                    )
+                )
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    text_chunks.append(block.text)
+            if msg.usage:
+                telemetry.update(msg.usage)
+            if msg.model:
+                telemetry.setdefault("model", msg.model)
 
         try:
-            await asyncio.wait_for(_consume(), timeout=self._query_timeout_s)
+            # Scrub auth-override env vars from os.environ for the duration of
+            # the SDK call so the spawned `claude` CLI falls back to OAuth.
+            # The SDK merges options.env *on top of* inherited os.environ, so
+            # we must mutate the real process env — restoring on exit. The
+            # mutation window is the SDK call only; concurrent callers in the
+            # same process share the same env, which is fine because we
+            # always restore the same key set.
+            with _oauth_only_environ():
+                await asyncio.wait_for(_consume(), timeout=self._query_timeout_s)
         except asyncio.TimeoutError as e:
             raise DesignerError(
                 f"Claude did not respond within {self._query_timeout_s:.0f}s. "
