@@ -28,6 +28,18 @@ def test_inject_csp_idempotent():
     assert twice.count("Content-Security-Policy") == 1
 
 
+def test_inject_csp_replaces_existing_weak_policy():
+    html = (
+        '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" '
+        'content="default-src *; connect-src *"><title>x</title></head>'
+        "<body></body></html>"
+    )
+    out = inject_csp(html)
+    assert out.count("Content-Security-Policy") == 1
+    assert "default-src *" not in out
+    assert "connect-src 'none'" in out
+
+
 def test_inject_csp_blocks_external_connections():
     out = inject_csp("<!doctype html><html><head></head><body></body></html>")
     # The directives we care about most:

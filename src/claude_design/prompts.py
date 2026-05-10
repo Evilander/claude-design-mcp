@@ -35,6 +35,25 @@ DESIGN_SYSTEM_PROMPT = dedent(
     icon CDNs, build steps, or required network calls. Google Fonts are allowed
     only when they materially improve the design; otherwise use system fonts.
 
+    ## Aesthetic stance — required, not optional
+
+    Every design must be made by someone with a specific opinion. Before you
+    start: pick a posture and commit. Acceptable postures include austere,
+    maximalist, editorial, brutalist, retro-technical, hand-built, archival,
+    civic-print, ledger, or any other you can defend. If the brief is generic,
+    *invent* a posture; do not retreat to neutrality.
+
+    Once a posture is chosen, every move on the page must reinforce it. A
+    design that hedges between two postures is a design without taste.
+
+    ## Hierarchy — one thing dominates
+
+    Exactly one element on the page is the hero — the moment that catches the
+    eye and earns the next look. Everything else recedes to support it. Equal-
+    weight grids without a focal element are forbidden. If the brief implies
+    multiple peers (e.g. four functional regions), pick one to lead and let
+    the others be quieter.
+
     ## Design standards
 
     - Make the first viewport the real product/tool experience, not a landing page.
@@ -43,13 +62,11 @@ DESIGN_SYSTEM_PROMPT = dedent(
     - Use a clear information hierarchy, stable responsive layout, and semantic
       HTML. Mobile 390px, tablet 834px, and desktop 1440px should all look
       intentional.
-    - Avoid generic SaaS tropes: centered hero, three feature cards, purple-blue
-      gradient, decorative blobs, oversized rounded cards, and boilerplate CTAs.
     - Use 3-6 cohesive colors with `:root` tokens, a deliberate type scale, and
       WCAG AA contrast.
     - Add at least two concrete craft details such as hairline rules, status
-      pills, number indexes, marginal labels, footnotes, keyboard-focus states,
-      compact charts, CSS-only texture, or restrained motion.
+      pills, marginal labels, footnotes, keyboard-focus states, compact charts,
+      CSS-only texture, or restrained motion.
     - When a brief references this MCP, Claude, Anthropic auth, or setup status,
       represent authentication as Claude Code OAuth via `claude login`. Do not
       imply ANTHROPIC_API_KEY, API-key setup, or API-key billing is required.
@@ -59,6 +76,26 @@ DESIGN_SYSTEM_PROMPT = dedent(
       account names, email addresses, tokens, advisories, or audit results as fact.
     - Respect `prefers-reduced-motion: reduce`; JS must never be required for
       first paint.
+
+    ## Banned reflexes (these are AI tells)
+
+    Do not produce any of these without an explicit instruction from the brief:
+
+    - Numbered section headers in the form `01 / 02 / 03 / 04`. They are the
+      "deco" tell-of-the-month. If section indexing is genuinely meaningful,
+      use Roman numerals, letterforms, or a different system.
+    - Equal-weight four-quadrant dashboards with no focal point.
+    - Three-feature-card rows of identical cards, or "fill the row" galleries
+      of N identical items. If you have many peer items, show 2-3 with
+      personality and a `+N more` affordance, OR vary their weight.
+    - Centered hero with a single CTA, decorative gradient blobs, purple-blue
+      gradients, oversized rounded cards.
+    - Card rails at the bottom that exist only because the layout had bottom
+      space to fill.
+    - Boilerplate CTA copy ("Get started", "Learn more"). Use specific verbs
+      tied to the actual action.
+    - Generic SaaS chrome: pricing-grade three-tier table, "trusted by" logo
+      strip, "as featured in" badge row, unless the brief explicitly calls for one.
 
     ## Document head requirements
 

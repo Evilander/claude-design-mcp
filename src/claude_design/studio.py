@@ -27,6 +27,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -218,38 +219,144 @@ _CSP_META = (
 )
 
 
-_HEAD_OPEN_RE = re.compile(r"<head[^>]*>", re.IGNORECASE)
 _DOCTYPE_RE = re.compile(r"<!doctype\s+html[^>]*>", re.IGNORECASE)
-# CSP has no directive that blocks <meta http-equiv="refresh">. We strip it
-# defensively so a model can't auto-redirect a file:// preview to an attacker.
-_META_REFRESH_RE = re.compile(
-    r"<meta[^>]*http-equiv\s*=\s*['\"]?refresh['\"]?[^>]*>",
-    re.IGNORECASE,
-)
+
+
+class _HeadFinder(HTMLParser):
+    """Find the byte offset of the first real <head> open tag.
+
+    Uses Python's stdlib HTML parser, which correctly skips HTML comments,
+    CDATA-like content inside ``<script>``/``<style>``, and decoy text. A
+    decoy comment like ``<!-- <head> -->`` will never trigger this — only an
+    actual parsed-as-HTML ``<head>`` element will. That closes the regex-only
+    "comment-wrapped decoy" bypass that previously evaded CSP injection.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.head_end_offset: int | None = None
+        self.head_open_count = 0
+        self._source: str = ""
+
+    def feed_with_source(self, html: str) -> None:
+        self._source = html
+        self.feed(html)
+        self.close()
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
+        if tag.lower() != "head":
+            return
+        self.head_open_count += 1
+        if self.head_end_offset is None:
+            # getpos() returns (line, col) — convert to absolute byte offset
+            # in the *source string* and walk to the end of the tag.
+            line, col = self.getpos()
+            start_idx = _line_col_to_index(self._source, line, col)
+            # Advance to the first '>' after start to find end-of-tag.
+            close = self._source.find(">", start_idx)
+            self.head_end_offset = close + 1 if close != -1 else start_idx
+
+
+def _line_col_to_index(source: str, line: int, col: int) -> int:
+    """Convert ``(line, col)`` (1-indexed line, 0-indexed col) to absolute idx."""
+    idx = 0
+    for _ in range(line - 1):
+        nl = source.find("\n", idx)
+        if nl == -1:
+            return len(source)
+        idx = nl + 1
+    return min(idx + col, len(source))
+
+
+def _strip_unsafe_meta_tags(html: str) -> str:
+    """Remove ``<meta http-equiv>`` tags that browsers honor but CSP doesn't cover.
+
+    Targets ``refresh`` (no CSP directive blocks auto-redirect), any existing
+    ``Content-Security-Policy`` or ``Content-Security-Policy-Report-Only`` so
+    the model can't downgrade our injected policy, and ``X-Frame-Options``
+    which is parser-honored independent of ``frame-ancestors``.
+
+    We use a stdlib HTML tokenizer-style pass rather than regex so a model
+    can't smuggle a tag past with whitespace or attribute-order tricks.
+    """
+    parser = _UnsafeMetaStripper()
+    parser.feed_with_source(html)
+    return parser.cleaned
+
+
+class _UnsafeMetaStripper(HTMLParser):
+    """Rewrite the source, dropping unsafe ``<meta http-equiv="...">`` tags."""
+
+    _UNSAFE_VALUES = frozenset({
+        "refresh",
+        "content-security-policy",
+        "content-security-policy-report-only",
+        "x-frame-options",
+    })
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.cleaned_chunks: list[str] = []
+        self._source: str = ""
+        self._cursor: int = 0
+
+    @property
+    def cleaned(self) -> str:
+        return "".join(self.cleaned_chunks) + self._source[self._cursor:]
+
+    def feed_with_source(self, html: str) -> None:
+        self._source = html
+        self.feed(html)
+        self.close()
+
+    def _flush_to(self, idx: int) -> None:
+        if idx > self._cursor:
+            self.cleaned_chunks.append(self._source[self._cursor:idx])
+            self._cursor = idx
+
+    def _tag_extent(self) -> tuple[int, int]:
+        line, col = self.getpos()
+        start = _line_col_to_index(self._source, line, col)
+        close = self._source.find(">", start)
+        end = close + 1 if close != -1 else start
+        return start, end
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
+        if tag.lower() != "meta":
+            return
+        for name, value in attrs:
+            if (name or "").lower() == "http-equiv" and (value or "").lower() in self._UNSAFE_VALUES:
+                start, end = self._tag_extent()
+                self._flush_to(start)
+                self._cursor = end  # skip the unsafe tag
+                return
+
+    def handle_startendtag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
+        self.handle_starttag(tag, attrs)
 
 
 def inject_csp(html: str) -> str:
-    """Inject the strict CSP <meta> and strip any meta-refresh redirects.
+    """Inject the strict CSP <meta> and strip unsafe model-authored meta tags.
 
-    If the document has no <head>, we synthesize one. The CSP is harmless on
-    the model's own design (no remote scripts, no XHR), but blocks any attempt
-    by model output to exfiltrate data when opened from file://. We also strip
-    ``<meta http-equiv="refresh">`` because no CSP directive blocks it.
+    Uses Python's stdlib HTML parser to find the first real ``<head>``, which
+    correctly ignores tag-shaped text inside comments, ``<script>``, and
+    ``<style>``. Before injecting, we strip any existing CSP meta (so the
+    model can't downgrade our policy), ``<meta http-equiv="refresh">``, and
+    ``<meta http-equiv="X-Frame-Options">``.
     """
-    html = _META_REFRESH_RE.sub("", html)
-    if "Content-Security-Policy" in html[:4096]:
-        return html  # already present, don't double-inject
-    m = _HEAD_OPEN_RE.search(html)
-    if m:
-        idx = m.end()
-        return html[:idx] + "\n  " + _CSP_META + html[idx:]
-    # No <head>: inject after <!doctype> if present, else prepend.
-    m = _DOCTYPE_RE.search(html)
+    cleaned = _strip_unsafe_meta_tags(html)
+    finder = _HeadFinder()
+    finder.feed_with_source(cleaned)
+    if finder.head_end_offset is not None:
+        idx = finder.head_end_offset
+        return cleaned[:idx] + "\n  " + _CSP_META + cleaned[idx:]
+    # No real <head>: synthesize one after <!doctype> if present, else prepend.
+    m = _DOCTYPE_RE.search(cleaned)
     insert = f"\n<head>\n  {_CSP_META}\n</head>"
     if m:
         idx = m.end()
-        return html[:idx] + insert + html[idx:]
-    return f"<!doctype html>{insert}\n{html}"
+        return cleaned[:idx] + insert + cleaned[idx:]
+    return f"<!doctype html>{insert}\n{cleaned}"
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -356,6 +463,19 @@ class Studio:
         return _short_id()
 
     def write_html(self, design_id: str, html: str) -> Path:
+        # Hard ceiling on persisted designs. The model's natural output is
+        # ~10-30KB; anything pushing 2MB is almost certainly a prompt-injected
+        # base64 amplification rather than a real design. The renderer would
+        # also choke on such input. Cap at 2 MiB.
+        max_bytes = 2 * 1024 * 1024
+        encoded_len = len(html.encode("utf-8"))
+        if encoded_len > max_bytes:
+            raise ValueError(
+                f"Design HTML is {encoded_len:,} bytes; refusing to persist > "
+                f"{max_bytes:,}. The model output is unusually large — likely "
+                "a prompt-injection amplification, not a real design. Retry "
+                "with a tighter brief or set a smaller scope."
+            )
         path = self.designs_dir / f"{_safe_filename(design_id)}.html"
         _atomic_write_text(path, inject_csp(html))
         return path

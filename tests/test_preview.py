@@ -47,6 +47,7 @@ def test_build_index_writes_file(studio: Studio):
     body = out.read_text(encoding="utf-8")
     assert a.id in body
     assert "studio" in body.lower()
+    assert '<header class="card-header">' in body
 
 
 def test_build_index_handles_empty_list(studio: Studio):

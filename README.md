@@ -38,6 +38,15 @@ inheriting whatever OAuth session Claude Code is currently using.
 
 If `claude` runs interactively for you, this server can call Claude.
 
+> **Important on env vars:** the `claude` CLI silently prefers
+> `ANTHROPIC_API_KEY` (and `ANTHROPIC_AUTH_TOKEN` / `CLAUDE_CODE_USE_BEDROCK` /
+> `CLAUDE_CODE_USE_VERTEX`) over OAuth when any of them are set in your shell.
+> claude-design-mcp scrubs these variables from the subprocess environment
+> for the duration of each design call so OAuth wins. `--check` will list
+> any that were detected so you can decide whether the scrub is what you
+> want. To opt out and use your API key / Bedrock / Vertex anyway, set
+> `CLAUDE_DESIGN_ALLOW_API_KEY=1`.
+
 ## Install
 
 ```powershell
@@ -61,6 +70,13 @@ claude-design-mcp --check-json
 `claude` CLI version + path. There is no API key to set.
 `--check-json` prints the same readiness signal as machine-readable JSON for
 installers, CI, and support scripts.
+
+On locked-down Windows hosts, Playwright may be unable to use the default
+user temp directory. Set `CLAUDE_DESIGN_PLAYWRIGHT_TMP` to a writable local
+folder. If you install Chromium into a project-local folder, point
+`CLAUDE_DESIGN_PLAYWRIGHT_BROWSERS_PATH` at it so `design_render` can find it.
+`CLAUDE_DESIGN_CHROMIUM_SANDBOX=auto` tries Chromium sandboxing first and falls
+back only when the host closes sandboxed pages before rendering.
 
 ## Wire it into Claude Code
 
@@ -124,9 +140,13 @@ cost across renders.
 | `CLAUDE_DESIGN_STUDIO_DIR` | `./studio` | Where designs live. |
 | `CLAUDE_DESIGN_AUTO_RENDER` | `auto` | `1`/`0`/`auto` — auto screenshot on create/iterate. |
 | `CLAUDE_DESIGN_CLI_PATH` | auto | Optional explicit path to the `claude` CLI. |
+| `CLAUDE_DESIGN_PLAYWRIGHT_TMP` | auto | Writable temp directory for Playwright launch/download operations. |
+| `CLAUDE_DESIGN_PLAYWRIGHT_BROWSERS_PATH` | auto | Optional browser payload directory for local Playwright installs. |
+| `CLAUDE_DESIGN_CHROMIUM_SANDBOX` | `auto` | `auto`, `1`, or `0`; controls Chromium sandbox fallback for screenshots. |
 | `CLAUDE_DESIGN_EFFORT` | `low` | Claude Code effort level for design calls. Use `none` to omit. |
 | `CLAUDE_DESIGN_THINKING` | `disabled` | Thinking mode for design calls: `disabled`, `adaptive`, or `none`. |
 | `CLAUDE_DESIGN_MAX_BUFFER_BYTES` | `8388608` | SDK stdout JSON buffer cap for large HTML responses. |
+| `CLAUDE_DESIGN_ALLOW_API_KEY` | `0` | Set `1` to keep `ANTHROPIC_API_KEY` / Bedrock / Vertex env vars in the subprocess instead of scrubbing for OAuth. |
 
 Authentication comes from the local `claude` CLI's OAuth session — there
 is no API-key env var to set.

@@ -20,7 +20,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from .designer import Designer, DesignDraft, DesignerError
+from .designer import Designer, DesignDraft, DesignerError, auth_override_state
 from .models import (
     DesignApplySystemInput,
     DesignCreateInput,
@@ -76,13 +76,13 @@ _FORBIDDEN_ROOTS: tuple[Path, ...] = tuple(
 
 
 def _auto_render_default() -> bool:
-    """Decide whether to auto-render. Defaults to true if Playwright is available."""
+    """Decide whether to auto-render. Defaults to true only if rendering is ready."""
     flag = (os.environ.get("CLAUDE_DESIGN_AUTO_RENDER") or "auto").strip().lower()
     if flag in {"1", "true", "yes", "on"}:
         return True
     if flag in {"0", "false", "no", "off"}:
         return False
-    return Renderer.is_available()
+    return bool(Renderer.readiness().get("ready"))
 
 
 def _resolve_studio_dir() -> Path:
@@ -90,6 +90,8 @@ def _resolve_studio_dir() -> Path:
     raw = os.environ.get("CLAUDE_DESIGN_STUDIO_DIR") or str(_PKG_ROOT / "studio")
     resolved = Path(raw).expanduser().resolve()
     _assert_path_safe(resolved, label="CLAUDE_DESIGN_STUDIO_DIR")
+    if not (os.environ.get("CLAUDE_DESIGN_STUDIO_DIR") or "").strip():
+        os.environ["CLAUDE_DESIGN_STUDIO_DIR"] = str(resolved)
     return resolved
 
 
@@ -411,7 +413,7 @@ async def design_variants(params: DesignVariantsInput) -> str:
         viewport = parent.viewport
         name = parent.name
 
-    drafts = await designer().variants(
+    variant_results = await designer().variants(
         count=params.count,
         dimension=params.dimension.value,
         base_brief=base_brief,
@@ -419,22 +421,36 @@ async def design_variants(params: DesignVariantsInput) -> str:
         base_meta=base_meta,
         tier=params.tier.value,
     )
+    successes = [r for r in variant_results if r.draft is not None]
+    failures = [
+        {"index": r.index + 1, "error": r.error or "unknown error"}
+        for r in variant_results
+        if r.draft is None
+    ]
+    if not successes:
+        detail = "; ".join(f"#{f['index']}: {f['error']}" for f in failures[:3])
+        return _err(f"All {params.count} variants failed. {detail}")
 
     # Persist all drafts first (DB writes are <1ms each); then render them
     # in parallel. With the warm browser pool, N renders run concurrently
     # in their own contexts — wall-clock time stays close to one render.
     recs: list[DesignRecord] = []
-    for i, draft in enumerate(drafts):
+    drafts: list[DesignDraft] = []
+    for result in successes:
+        draft = result.draft
+        if draft is None:
+            continue
+        drafts.append(draft)
         rec = _persist_design(
             draft=draft,
             brief=base_brief or "",
             mode=mode,
             tier=params.tier.value,
             viewport=viewport,
-            name=f"{name}-v{i+1}" if name else None,
+            name=f"{name}-v{result.index + 1}" if name else None,
             parent_id=parent.id if parent else None,
             iteration_of=None,
-            instructions=f"variant-{params.dimension.value}-{i+1}",
+            instructions=f"variant-{params.dimension.value}-{result.index + 1}",
         )
         recs.append(rec)
 
@@ -446,12 +462,18 @@ async def design_variants(params: DesignVariantsInput) -> str:
     )
     out = [_design_response(rec, draft) for rec, draft in zip(rendered, drafts)]
 
-    return _ok({
+    body: dict[str, Any] = {
         "count": len(out),
         "dimension": params.dimension.value,
         "parent_id": parent.id if parent else None,
         "variants": out,
-    })
+    }
+    if failures:
+        body["partial"] = True
+        body["requested_count"] = params.count
+        body["failed_count"] = len(failures)
+        body["failures"] = failures
+    return _ok(body)
 
 
 # ---- Tool: design_render -----------------------------------------------
@@ -482,23 +504,20 @@ async def design_render(params: DesignRenderInput) -> str:
     rec = studio().get_design(params.design_id)
     if not rec:
         return _err(f"No design with id {params.design_id!r}.")
-    if not Renderer.is_available():
-        return _err(
-            "Playwright is not installed. Run "
-            "`pip install \"claude-design-mcp[render]\" && playwright install chromium`."
-        )
+    ready = Renderer.readiness()
+    if not ready.get("ready"):
+        return _err(_render_readiness_error(ready))
     out_path = studio().render_path_for(rec.id, params.viewport.value)
-    written = await renderer().render(
+    r = renderer()
+    written = await r.render(
         html_path=rec.html_path,
         out_path=out_path,
         viewport=params.viewport.value,
         full_page=params.full_page,
     )
     if not written:
-        return _err(
-            "Render failed silently. Try `playwright install chromium` and confirm "
-            "the design's HTML loads in a normal browser first."
-        )
+        detail = r.last_error or "unknown Playwright failure"
+        return _err(f"Render failed: {detail}")
     studio().update_render_path(rec.id, written)
     return _ok({
         "design_id": rec.id,
@@ -869,10 +888,15 @@ async def _maybe_render(
     stderr. The design itself was already persisted before this runs.
     """
     should = override if override is not None else _auto_render_default()
-    if not should or not Renderer.is_available():
+    if not should:
+        return rec
+    ready = Renderer.readiness()
+    if not ready.get("ready"):
+        draft.warnings.append(f"screenshot generation skipped: {_render_readiness_error(ready)}")
         return rec
     out_path = studio().render_path_for(rec.id, viewport)
-    written = await renderer().render(
+    r = renderer()
+    written = await r.render(
         html_path=rec.html_path,
         out_path=out_path,
         viewport=viewport,
@@ -882,11 +906,35 @@ async def _maybe_render(
         studio().update_render_path(rec.id, written)
         rec.render_path = written
     else:
+        detail = r.last_error or "unknown Playwright failure"
         draft.warnings.append(
-            "screenshot generation failed; design saved without a render. "
-            "Run design_render to retry, or check the MCP server's stderr log."
+            f"screenshot generation failed: {detail}. "
+            "Design saved without a render; run design_render to retry."
         )
     return rec
+
+
+def _render_readiness_error(readiness: dict[str, Any]) -> str:
+    """Turn renderer readiness diagnostics into a caller-actionable message."""
+    if not readiness.get("available"):
+        return (
+            "Playwright is not installed. Run "
+            "`pip install \"claude-design-mcp[render]\" && playwright install chromium`."
+        )
+    temp_dir = readiness.get("temp_dir") or {}
+    if not temp_dir.get("ok"):
+        return (
+            "Playwright cannot create temporary files "
+            f"under {temp_dir.get('path')!r}: {temp_dir.get('error')}. "
+            "Set CLAUDE_DESIGN_PLAYWRIGHT_TMP to a writable local directory."
+        )
+    browsers = readiness.get("browsers") or {}
+    if not browsers.get("ok"):
+        return (
+            f"{browsers.get('error') or 'Playwright Chromium is not ready'} "
+            f"{browsers.get('hint') or 'Run `playwright install chromium`.'}"
+        ).strip()
+    return "Playwright renderer is not ready; run `claude-design-mcp --check-json` for details."
 
 
 async def _resolve_references(ref_ids: list[str]) -> list[dict]:
@@ -977,10 +1025,18 @@ def _list_markdown(
 
 
 def _zip_dir(src: Path, dest: Path) -> None:
+    """Zip every regular file under ``src`` into ``dest``.
+
+    Symlinks are skipped: ``p.is_file()`` returns True for symlinks-to-files
+    which would let a hostile artifact placed inside the export staging dir
+    leak its target's contents (e.g. ``~/.ssh/id_rsa``) into the bundle.
+    """
     if dest.exists():
         dest.unlink()
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in src.rglob("*"):
+            if p.is_symlink():
+                continue
             if p.is_file():
                 zf.write(p, p.relative_to(src))
 
@@ -1099,15 +1155,19 @@ def _claude_cli_status() -> dict[str, Any]:
 
 def _build_check_report() -> dict[str, Any]:
     """Build a machine-readable readiness report for humans and automation."""
+    auth_overrides = auth_override_state()
     report: dict[str, Any] = {
         "ok": True,
         "authentication": {
             "mode": "claude-code-oauth",
             "api_key_required": False,
             "setup": "Run `claude login`; no ANTHROPIC_API_KEY is used.",
+            "env_overrides_present": auth_overrides["present"],
+            "env_overrides_scrubbed": auth_overrides["scrub_enabled"],
+            "preserve_overrides_env": auth_overrides["allow_override_env"],
         },
         "studio_dir": {"ok": True, "path": None, "error": None},
-        "playwright": {"available": Renderer.is_available()},
+        "playwright": {},
         "claude_cli": {},
         "studio_init": {"ok": True, "error": None},
     }
@@ -1121,11 +1181,17 @@ def _build_check_report() -> dict[str, Any]:
         return report
 
     report["studio_dir"] = {"ok": True, "path": str(resolved), "error": None}
+    renderer_readiness = Renderer.readiness()
+    report["playwright"] = renderer_readiness
 
     cli_status = _claude_cli_status()
     report["claude_cli"] = cli_status
     if not cli_status["ok"]:
         report["ok"] = False
+    if not renderer_readiness.get("ready"):
+        # Rendering is optional: do not fail overall readiness, but expose the
+        # precise blocker so install/support scripts can warn before auto-render.
+        report["playwright"]["required_for_core"] = False
 
     try:
         studio()
@@ -1143,14 +1209,40 @@ def _print_check_report(report: dict[str, Any]) -> None:
     else:
         print(f"studio dir   : INVALID — {studio_dir['error']}", file=sys.stderr)
     print(
-        f"playwright   : {'yes' if report['playwright']['available'] else 'no'}",
+        f"playwright   : {'ready' if report['playwright'].get('ready') else 'not ready'}",
         file=sys.stderr,
     )
+    if not report["playwright"].get("ready"):
+        print(
+            f"render hint  : {_render_readiness_error(report['playwright'])}",
+            file=sys.stderr,
+        )
     print(f"claude CLI   : {report['claude_cli'].get('line', 'not checked')}", file=sys.stderr)
+    auth = report["authentication"]
     print(
         "auth         : Claude Code OAuth (`claude login`); no API key required",
         file=sys.stderr,
     )
+    overrides = auth.get("env_overrides_present") or []
+    if overrides:
+        scrubbed = auth.get("env_overrides_scrubbed")
+        if scrubbed:
+            print(
+                "auth (note)  : detected "
+                + ", ".join(overrides)
+                + " in env. The MCP scrubs these before spawning the CLI so "
+                "design calls use OAuth, not the API. Set "
+                f"{auth.get('preserve_overrides_env')}=1 to preserve them.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "auth (warn)  : "
+                + ", ".join(overrides)
+                + " is set AND override-preservation is enabled. Design calls "
+                "will bill against the API account, not OAuth.",
+                file=sys.stderr,
+            )
     studio_init = report["studio_init"]
     if studio_init["ok"]:
         print("studio init  : ok", file=sys.stderr)
