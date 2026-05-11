@@ -11,6 +11,7 @@ venv/
 build/
 dist/
 pytest-of-*/
+.tmp/
 
 # Env
 .env

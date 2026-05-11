@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -11,6 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class ResponseFormat(str, Enum):
     MARKDOWN = "markdown"
     JSON = "json"
+
+
+class DesignMdFormat(str, Enum):
+    JSON = "json"
+    DESIGN_MD = "design-md"
 
 
 class DesignMode(str, Enum):
@@ -229,6 +235,10 @@ class DesignExtractSystemInput(BaseModel):
         max_length=64,
     )
     tier: DesignTier = Field(default=DesignTier.FAST)
+    format: DesignMdFormat = Field(
+        default=DesignMdFormat.JSON,
+        description="Output format. 'design-md' emits a Google DESIGN.md document.",
+    )
 
     @field_validator("design_ids")
     @classmethod
@@ -237,6 +247,33 @@ class DesignExtractSystemInput(BaseModel):
         if bad:
             raise ValueError(f"design_ids must be hex-only 6-32 chars; got {bad}")
         return v
+
+
+class DesignValidateDesignMdInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    design_md_path: str = Field(
+        ...,
+        description="Absolute path to a DESIGN.md file. UNC paths are refused.",
+        min_length=4,
+        max_length=1024,
+    )
+
+    @field_validator("design_md_path")
+    @classmethod
+    def _validate_path(cls, v: str) -> str:
+        if v.startswith(("\\\\", "//")):
+            raise ValueError(
+                "design_md_path must not be a UNC path; pass a local absolute path."
+            )
+        p = Path(v).expanduser()
+        if not p.is_absolute():
+            raise ValueError("design_md_path must be absolute.")
+        if not p.exists():
+            raise ValueError(f"design_md_path does not exist: {v!r}")
+        if not p.is_file():
+            raise ValueError(f"design_md_path is not a regular file: {v!r}")
+        return str(p)
 
 
 class DesignApplySystemInput(BaseModel):
@@ -298,6 +335,6 @@ class DesignPreviewInput(BaseModel):
         pattern=_ID_PATTERN,
     )
     rebuild_index: bool = Field(
-        default=True,
+        default=False,
         description="Regenerate the contact-sheet index page before returning its URL.",
     )

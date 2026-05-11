@@ -30,9 +30,9 @@ DESIGN_SYSTEM_PROMPT = dedent(
     2. A `json` block containing the metadata object described below.
 
     The HTML must be production-quality but bounded: target 12-18 KB, stay under
-    220 lines, inline CSS in one `<style>` block, optional inline JS only for
-    progressive enhancement. Do not use Tailwind, Bootstrap, React, Alpine,
-    icon CDNs, build steps, or required network calls. Google Fonts are allowed
+    220 lines, inline CSS in one `<style>` block, and no JavaScript. Do not use
+    Tailwind, Bootstrap, React, Alpine, icon CDNs, build steps, or required network calls.
+    Google Fonts are allowed
     only when they materially improve the design; otherwise use system fonts.
 
     ## Aesthetic stance — required, not optional
@@ -74,8 +74,8 @@ DESIGN_SYSTEM_PROMPT = dedent(
       does not provide exact measurements, label invented operational values as
       sample/demo data or use neutral placeholders. Do not invent real personal
       account names, email addresses, tokens, advisories, or audit results as fact.
-    - Respect `prefers-reduced-motion: reduce`; JS must never be required for
-      first paint.
+    - Respect `prefers-reduced-motion: reduce`; use CSS-only interactions and
+      never require JavaScript.
 
     ## Banned reflexes (these are AI tells)
 

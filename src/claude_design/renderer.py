@@ -42,7 +42,8 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 # ---------------------------------------------------------------------------
 # Viewport presets
@@ -74,16 +75,34 @@ _ALLOWED_HOSTS = (
 )
 
 _INSTALL_LOCATION_RE = re.compile(r"^\s*Install location:\s*(.+?)\s*$", re.MULTILINE)
+_READINESS_CACHE_LOCK = threading.Lock()
+_READINESS_CACHE: tuple[tuple[str | None, ...], dict[str, Any]] | None = None
 
 
-def _is_allowed_request_url(url: str) -> bool:
+def _is_allowed_request_url(
+    url: str,
+    *,
+    main_file_url: str | None = None,
+    local_root: Path | None = None,
+) -> bool:
     """Return True only for local/data URLs or exact HTTPS host allowlist hits."""
-    if url.startswith(("file://", "data:")):
+    if url.startswith("data:"):
         return True
     try:
         parsed = urlsplit(url)
     except ValueError:
         return False
+    if parsed.scheme == "file":
+        if main_file_url and url == main_file_url:
+            return True
+        if local_root is None:
+            return main_file_url is None
+        try:
+            file_path = Path(url2pathname(unquote(parsed.path))).resolve()
+            file_path.relative_to(local_root.resolve())
+            return True
+        except (OSError, ValueError):
+            return False
     if parsed.scheme != "https":
         return False
     hostname = (parsed.hostname or "").lower().rstrip(".")
@@ -183,6 +202,16 @@ def _sandbox_candidates() -> list[bool]:
         return [False]
     return [True, False]
 
+
+def _readiness_fingerprint() -> tuple[str | None, ...]:
+    return (
+        os.environ.get("CLAUDE_DESIGN_PLAYWRIGHT_TMP"),
+        os.environ.get("CLAUDE_DESIGN_STUDIO_DIR"),
+        os.environ.get("CLAUDE_DESIGN_PLAYWRIGHT_BROWSERS_PATH"),
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
+        sys.executable,
+    )
+
 _RENDER_NAV_TIMEOUT_MS = 25_000
 _RENDER_FONTS_TIMEOUT_S = 8.0
 _RENDER_SCREENSHOT_TIMEOUT_S = 30.0
@@ -228,28 +257,47 @@ class Renderer:
         Pure probe — does NOT mutate ``os.environ``. The actual env apply
         happens lazily in :meth:`_ensure_browser` just before launch.
         """
+        global _READINESS_CACHE
+        fingerprint = _readiness_fingerprint()
+        with _READINESS_CACHE_LOCK:
+            if _READINESS_CACHE is not None and _READINESS_CACHE[0] == fingerprint:
+                return dict(_READINESS_CACHE[1])
+
         runtime = _configure_runtime_environment(apply=False)
         try:
             import playwright  # noqa: F401
         except ImportError as e:
-            return {
+            result = {
                 "ready": False,
                 "available": False,
                 "error": str(e),
                 **runtime,
                 "browsers": {"ok": False, "error": "playwright is not installed"},
             }
+            with _READINESS_CACHE_LOCK:
+                _READINESS_CACHE = (fingerprint, result)
+            return dict(result)
 
         browsers = Renderer._browser_install_status(
             candidate_path=runtime.get("browsers_path")
         )
         ready = bool(runtime["temp_dir"]["ok"] and browsers["ok"])
-        return {
+        result = {
             "ready": ready,
             "available": True,
             **runtime,
             "browsers": browsers,
         }
+        with _READINESS_CACHE_LOCK:
+            _READINESS_CACHE = (fingerprint, result)
+        return dict(result)
+
+    @staticmethod
+    def clear_readiness_cache() -> None:
+        """Drop cached readiness diagnostics after env changes or tests."""
+        global _READINESS_CACHE
+        with _READINESS_CACHE_LOCK:
+            _READINESS_CACHE = None
 
     @staticmethod
     def _browser_install_status(*, candidate_path: str | None = None) -> dict[str, Any]:
@@ -356,9 +404,10 @@ class Renderer:
                     browser = await self._pw.chromium.launch(
                         headless=True,
                         args=_HARDENED_LAUNCH_ARGS,
+                        channel="chromium",
                         chromium_sandbox=sandbox,
                     )
-                    ctx = await browser.new_context()
+                    ctx = await browser.new_context(service_workers="block")
                     try:
                         page = await ctx.new_page()
                         await page.close()
@@ -470,7 +519,8 @@ class Renderer:
                 reduced_motion="reduce",
                 storage_state=None,
                 bypass_csp=False,
-                java_script_enabled=True,
+                service_workers="block",
+                java_script_enabled=False,
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -480,7 +530,11 @@ class Renderer:
 
             # Network allowlist — abort anything off the list.
             async def _route(route, request):
-                if _is_allowed_request_url(request.url):
+                if _is_allowed_request_url(
+                    request.url,
+                    main_file_url=url,
+                    local_root=html_path.parent,
+                ):
                     await route.continue_()
                     return
                 await route.abort("blockedbyclient")

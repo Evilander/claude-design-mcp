@@ -14,4 +14,4 @@ Format: `YYYY-MM-DD HH:MM — <decision> (rationale)`
 
 ## Execution decisions (fill in)
 
-(none yet)
+2026-05-11 00:14 — DESIGN.md MVP emits the 8 canonical sections from SystemRecord and validates with the official @google/design.md package through a Windows-safe npx shim (interop pivot, no new deps).

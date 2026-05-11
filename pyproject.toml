@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.21"]
+requires = ["hatchling>=1.29,<2"]
 build-backend = "hatchling.build"
 
 [project]
 name = "claude-design-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server that routes design requests through Claude's frontier visual-design capability with versioning, variants, rendering, and design-system extraction."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,18 +16,24 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 
 dependencies = [
-  "mcp>=1.2.0",
-  "claude-agent-sdk>=0.1.70",
-  "pydantic>=2.5",
+  "mcp>=1.23,<2",
+  "claude-agent-sdk>=0.1.80,<0.2",
+  "pydantic>=2.5,<3",
   "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
-render = ["playwright>=1.45"]
+render = ["playwright>=1.59,<2"]
 dev = ["pytest>=7", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.urls]
+Homepage = "https://github.com/evilander/claude-design-mcp"
+Issues = "https://github.com/evilander/claude-design-mcp/issues"
+Source = "https://github.com/evilander/claude-design-mcp"
 
 [project.scripts]
 claude-design-mcp = "claude_design.server:main"

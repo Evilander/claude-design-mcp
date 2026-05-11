@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import shutil
+import stat
 import sys
 import zipfile
 from contextlib import asynccontextmanager
@@ -20,10 +21,12 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .design_md import emit_design_md, validate_design_md_via_cli
 from .designer import Designer, DesignDraft, DesignerError, auth_override_state
 from .models import (
     DesignApplySystemInput,
     DesignCreateInput,
+    DesignMdFormat,
     DesignExportInput,
     DesignExtractSystemInput,
     DesignGetInput,
@@ -31,6 +34,7 @@ from .models import (
     DesignListInput,
     DesignPreviewInput,
     DesignRenderInput,
+    DesignValidateDesignMdInput,
     DesignVariantsInput,
     ResponseFormat,
 )
@@ -85,9 +89,27 @@ def _auto_render_default() -> bool:
     return bool(Renderer.readiness().get("ready"))
 
 
+def _can_create_under(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".claude-design-write-test-{os.getpid()}"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _default_studio_dir() -> Path:
+    home_default = Path.home() / ".claude-design" / "studio"
+    if _can_create_under(home_default.parent):
+        return home_default
+    return Path.cwd().resolve() / "studio"
+
+
 def _resolve_studio_dir() -> Path:
     """Re-read the studio dir env each time the lazy singleton initializes."""
-    raw = os.environ.get("CLAUDE_DESIGN_STUDIO_DIR") or str(_PKG_ROOT / "studio")
+    raw = os.environ.get("CLAUDE_DESIGN_STUDIO_DIR") or str(_default_studio_dir())
     resolved = Path(raw).expanduser().resolve()
     _assert_path_safe(resolved, label="CLAUDE_DESIGN_STUDIO_DIR")
     if not (os.environ.get("CLAUDE_DESIGN_STUDIO_DIR") or "").strip():
@@ -152,6 +174,7 @@ def _reset_singletons() -> None:
             _studio.close()
         except Exception:  # noqa: BLE001
             pass
+    Renderer.clear_readiness_cache()
     _studio = _designer = _renderer = None
 
 
@@ -629,15 +652,22 @@ async def design_list(params: DesignListInput) -> str:
 )
 @_tool
 async def design_extract_system(params: DesignExtractSystemInput) -> str:
-    """Extract a coherent design system (tokens + components + principles) from designs.
+    """Extract a coherent design system from 1-10 designs.
 
-    Pass 1-10 design ids. Claude analyzes them, picks the strongest direction,
-    and returns a portable token bundle plus reusable component snippets. The
-    system is persisted with its own id so it can be applied later via
-    `design_apply_system`.
+    Analyzes the source designs, picks the strongest direction, and returns a
+    portable token bundle plus reusable component snippets. The system is
+    persisted with its own id so it can be applied later via
+    `design_apply_system` or exported as a DESIGN.md document.
+
+    Pass `format="design-md"` to receive the system as a Google DESIGN.md
+    document (8-section markdown spec at github.com/google-labs-code/design.md)
+    suitable for handoff to Claude Code, Cursor, Stitch, or any other
+    DESIGN.md-aware tool. The default `format="json"` returns the raw token
+    bundle for direct consumption.
 
     Returns:
-        str: JSON with system_id, name, summary, tokens, components, principles, source_ids.
+        str: JSON with system_id and the extracted bundle, OR a DESIGN.md
+        document if format=design-md.
     """
     designs: list[dict] = []
     for did in params.design_ids:
@@ -663,7 +693,50 @@ async def design_extract_system(params: DesignExtractSystemInput) -> str:
         source_ids=params.design_ids,
     )
     studio().insert_system(sys_rec)
+    if params.format == DesignMdFormat.DESIGN_MD:
+        return _ok({
+            "system_id": sys_rec.id,
+            "system": sys_rec.to_summary(),
+            "system_md": emit_design_md(sys_rec),
+        })
     return _ok({"system_id": sys_rec.id, **sys_rec.to_summary()})
+
+
+# ---- Tool: design_validate_design_md -----------------------------------
+
+
+@mcp.tool(
+    name="design_validate_design_md",
+    annotations={
+        "title": "Validate DESIGN.md Document",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+@_tool
+async def design_validate_design_md(params: DesignValidateDesignMdInput) -> str:
+    """Lint a DESIGN.md document for spec compliance and WCAG contrast.
+
+    Shells out to `npx @google/design.md lint`, the official validator from
+    Google Labs (Apache-2.0). Reports section ordering, missing required
+    sections, color/typography token shape, and WCAG AA contrast failures
+    between any defined foreground/background pair.
+
+    If the validator CLI is unavailable (no npx on PATH, network fetch
+    blocked), this returns `ok: null` with an explanation in `raw_output` —
+    the caller can decide whether to proceed without external validation.
+
+    Args:
+        params (DesignValidateDesignMdInput): an absolute path to a
+            DESIGN.md file on disk (max 1024 chars, no UNC paths).
+
+    Returns:
+        str: JSON with keys `ok` (bool|null), `warnings`, `errors`,
+        `wcag_failures`, and `raw_output`.
+    """
+    return _ok(validate_design_md_via_cli(params.design_md_path))
 
 
 # ---- Tool: design_apply_system -----------------------------------------
@@ -749,8 +822,7 @@ async def design_export(params: DesignExportInput) -> str:
         rec = studio().get_design(params.design_id)
         if not rec:
             return _err(f"No design with id {params.design_id!r}.")
-        out_dir = target_root / f"design-{rec.id}"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = _prepare_export_child_dir(target_root, f"design-{rec.id}")
         index = out_dir / "index.html"
         # Re-inject CSP on the way out (defense in depth — a design persisted
         # before CSP injection landed wouldn't otherwise carry one).
@@ -774,8 +846,7 @@ async def design_export(params: DesignExportInput) -> str:
     sys_rec = studio().get_system(params.system_id)  # type: ignore[arg-type]
     if not sys_rec:
         return _err(f"No design system with id {params.system_id!r}.")
-    out_dir = target_root / f"system-{sys_rec.id}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _prepare_export_child_dir(target_root, f"system-{sys_rec.id}")
     _atomic_write_text(out_dir / "tokens.json", json.dumps(sys_rec.tokens, indent=2))
     _atomic_write_text(
         out_dir / "system.json", json.dumps(sys_rec.to_summary(), indent=2)
@@ -797,7 +868,7 @@ async def design_export(params: DesignExportInput) -> str:
     name="design_preview",
     annotations={
         "title": "Get Preview URL",
-        "readOnlyHint": True,
+        "readOnlyHint": False,
         "destructiveHint": False,
         "idempotentHint": True,
         "openWorldHint": False,
@@ -967,6 +1038,166 @@ def _design_response(rec: DesignRecord, draft: DesignDraft) -> dict[str, Any]:
     return body
 
 
+_DEMO_BLUEPRINTS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "demo-operator-console",
+        "mode": "dashboard",
+        "title": "OAuth Design Console",
+        "summary": "A compact readiness console for an OAuth-native design MCP.",
+        "palette": ["#101114", "#f4efe4", "#c6ff5c", "#78a6ff", "#2b2f3a"],
+        "brief": "Demo operator console for claude-design-mcp readiness.",
+        "accent": "#c6ff5c",
+        "body": (
+            "<main><section class='hero'><p class='eyebrow'>Claude Code OAuth</p>"
+            "<h1>Design calls without API-key setup.</h1>"
+            "<p>Local studio, versioned HTML, screenshots, and exportable systems.</p>"
+            "</section><section class='panel'><h2>Readiness</h2><dl>"
+            "<dt>Auth</dt><dd>claude login</dd><dt>Transport</dt><dd>stdio</dd>"
+            "<dt>Renderer</dt><dd>sandboxed Chromium</dd></dl></section></main>"
+        ),
+    },
+    {
+        "name": "demo-pricing-table",
+        "mode": "landing",
+        "title": "Interop Pricing",
+        "summary": "A restrained pricing section for a local-first design bridge.",
+        "palette": ["#fbfaf6", "#1f2933", "#0e7490", "#eab308", "#e5e7eb"],
+        "brief": "Demo pricing table for a local-first MCP design bridge.",
+        "accent": "#0e7490",
+        "body": (
+            "<main><header><p class='eyebrow'>Local-first interop</p>"
+            "<h1>Install once. Keep the design record.</h1></header>"
+            "<section class='pricing'><article><h2>Solo</h2><p class='price'>$0</p>"
+            "<p>Bring your Claude Code OAuth session.</p></article>"
+            "<article class='featured'><h2>Studio</h2><p class='price'>$19</p>"
+            "<p>Shared examples, release gates, and export workflows.</p></article>"
+            "<article><h2>Team</h2><p class='price'>Custom</p>"
+            "<p>Private systems and CI proof.</p></article></section></main>"
+        ),
+    },
+    {
+        "name": "demo-editorial-hero",
+        "mode": "editorial",
+        "title": "Design Memory Field Notes",
+        "summary": "An editorial hero showing versioned design memory as a product surface.",
+        "palette": ["#15120e", "#f6ead7", "#b86b2b", "#7ea172", "#35302a"],
+        "brief": "Demo editorial hero for design memory and lineage.",
+        "accent": "#b86b2b",
+        "body": (
+            "<main><aside>Field Note 03</aside><section class='hero'>"
+            "<h1>Every visual decision leaves a trail.</h1>"
+            "<p>Compare variants, preserve lineage, extract the system, and hand the "
+            "next design back to an agent with context intact.</p>"
+            "<ul><li>Version tree</li><li>Rendered proof</li><li>Portable export</li></ul>"
+            "</section></main>"
+        ),
+    },
+)
+
+
+def _demo_html(*, title: str, accent: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+:root {{ color-scheme: light dark; --accent: {accent}; }}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  min-height: 100vh;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #101114;
+  color: #f4efe4;
+}}
+main {{
+  width: min(1120px, calc(100vw - 40px));
+  min-height: 100vh;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1.2fr .8fr;
+  gap: 28px;
+  align-items: center;
+}}
+.hero, .panel, article {{
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 68%);
+  border-radius: 8px;
+  background: color-mix(in srgb, #15171d, transparent 12%);
+  padding: clamp(24px, 4vw, 56px);
+}}
+.eyebrow, aside {{
+  color: var(--accent);
+  font: 700 12px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}}
+h1 {{ max-width: 760px; margin: 0 0 18px; font-size: clamp(42px, 7vw, 92px); line-height: .92; }}
+h2 {{ margin: 0 0 12px; font-size: 20px; }}
+p {{ color: #cfc7ba; font-size: 18px; line-height: 1.55; }}
+dl, ul {{ display: grid; gap: 12px; margin: 0; padding: 0; }}
+dt, li {{ color: #8f98a8; list-style: none; }}
+dd {{ margin: 0; color: #fff; font-weight: 700; }}
+.pricing {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }}
+.price {{ color: var(--accent); font-size: 44px; line-height: 1; margin: 12px 0; }}
+.featured {{ transform: translateY(-14px); border-color: var(--accent); }}
+@media (max-width: 820px) {{
+  main, .pricing {{ grid-template-columns: 1fr; padding-block: 40px; }}
+  .featured {{ transform: none; }}
+}}
+</style>
+</head>
+<body>{body}</body>
+</html>"""
+
+
+async def _run_demo() -> dict[str, Any]:
+    render_ready = bool(Renderer.readiness().get("ready"))
+    created: list[dict[str, Any]] = []
+    records: list[DesignRecord] = []
+    for item in _DEMO_BLUEPRINTS:
+        draft = DesignDraft(
+            html=_demo_html(title=item["title"], accent=item["accent"], body=item["body"]),
+            metadata={
+                "title": item["title"],
+                "summary": item["summary"],
+                "palette": item["palette"],
+                "fonts": ["Inter", "system-ui"],
+                "tokens": {"accent": item["accent"], "radius": "8px"},
+                "moves": ["single dominant focal point", "CSS-only responsive layout"],
+                "notes": "Generated by --demo without a Claude model call.",
+            },
+            model="fixture-demo",
+        )
+        rec = _persist_design(
+            draft=draft,
+            brief=item["brief"],
+            mode=item["mode"],
+            tier="fixture",
+            viewport="desktop",
+            name=item["name"],
+            parent_id=None,
+            iteration_of=None,
+            instructions="fixture demo",
+        )
+        rec = await _maybe_render(rec, draft, viewport="desktop", override=render_ready)
+        records.append(rec)
+        created.append(_design_response(rec, draft))
+    index_path = build_index(studio(), records)
+    if _renderer is not None:
+        await _renderer.aclose()
+    return {
+        "ok": True,
+        "studio_dir": str(studio().root),
+        "rendered": render_ready,
+        "count": len(created),
+        "designs": created,
+        "index_path": str(index_path),
+        "preview_url": studio().file_url(str(index_path)),
+    }
+
+
 def _design_markdown(body: dict[str, Any]) -> str:
     lines = [
         f"# {body.get('title') or body.get('name') or body.get('id')}",
@@ -1022,6 +1253,27 @@ def _list_markdown(
     if has_more:
         lines.append(f"\n_…more designs available. Use offset={offset+limit}._")
     return "\n".join(lines)
+
+
+def _is_reparse_point(path: Path) -> bool:
+    attrs = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
+    return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _prepare_export_child_dir(target_root: Path, child_name: str) -> Path:
+    out_dir = target_root / child_name
+    if out_dir.exists() and (out_dir.is_symlink() or _is_reparse_point(out_dir)):
+        raise ValueError(f"export output directory is a symlink/reparse point: {out_dir}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    resolved_root = target_root.resolve()
+    resolved_out = out_dir.resolve()
+    try:
+        resolved_out.relative_to(resolved_root)
+    except ValueError as e:
+        raise ValueError(
+            f"export output directory escapes target_dir: {resolved_out}"
+        ) from e
+    return out_dir
 
 
 def _zip_dir(src: Path, dest: Path) -> None:
@@ -1122,12 +1374,15 @@ def _claude_cli_status() -> dict[str, Any]:
     configured = (os.environ.get("CLAUDE_DESIGN_CLI_PATH") or "").strip()
     if configured:
         candidate = Path(configured).expanduser()
-        found = str(candidate) if candidate.exists() else shutil.which(configured)
-        if not found:
+        if not candidate.is_absolute() or not candidate.is_file():
             return {
                 "ok": False,
-                "line": f"CLAUDE_DESIGN_CLI_PATH is set but not executable: {configured}",
+                "line": (
+                    "CLAUDE_DESIGN_CLI_PATH must be an absolute executable path: "
+                    f"{configured}"
+                ),
             }
+        found = str(candidate.resolve())
     else:
         found = shutil.which("claude") or shutil.which("claude.exe")
     if not found:
@@ -1272,6 +1527,11 @@ def main() -> None:
         help="Print machine-readable readiness JSON and exit.",
     )
     parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Create three fixture designs and render them if Playwright is ready.",
+    )
+    parser.add_argument(
         "--transport",
         default="stdio",
         choices=["stdio"],
@@ -1290,6 +1550,11 @@ def main() -> None:
         else:
             _print_check_report(report)
         sys.exit(0 if report["ok"] else 1)
+
+    if args.demo:
+        report = asyncio.run(_run_demo())
+        print(json.dumps(report, indent=2, default=str))
+        sys.exit(0)
 
     mcp.run()
 
