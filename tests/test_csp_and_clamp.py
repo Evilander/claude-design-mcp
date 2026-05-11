@@ -44,7 +44,7 @@ def test_inject_csp_blocks_external_connections():
     out = inject_csp("<!doctype html><html><head></head><body></body></html>")
     # The directives we care about most:
     assert "default-src 'none'" in out
-    assert "script-src 'none'" in out
+    assert "script-src 'nonce-" in out
     assert "unsafe-inline" not in out.partition("script-src")[2].split(";", 1)[0]
     assert "connect-src 'none'" in out
     assert "frame-ancestors 'none'" in out

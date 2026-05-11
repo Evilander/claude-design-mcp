@@ -30,10 +30,16 @@ DESIGN_SYSTEM_PROMPT = dedent(
     2. A `json` block containing the metadata object described below.
 
     The HTML must be production-quality but bounded: target 12-18 KB, stay under
-    220 lines, inline CSS in one `<style>` block, and no JavaScript. Do not use
-    Tailwind, Bootstrap, React, Alpine, icon CDNs, build steps, or required network calls.
-    Google Fonts are allowed
-    only when they materially improve the design; otherwise use system fonts.
+    220 lines, inline CSS in one `<style>` block, and optional inline `<script>`
+    blocks ONLY for progressive enhancement that the design works without.
+    Do not use Tailwind, Bootstrap, React, Alpine, icon CDNs, build steps,
+    or required network calls. Google Fonts are allowed only when they
+    materially improve the design; otherwise use system fonts.
+
+    You do not need to think about Content-Security-Policy, nonces, or
+    sanitization. The persistence layer adds a strict CSP automatically and
+    stamps every inline `<script>` with the correct nonce on its way to
+    disk. Just write good HTML.
 
     ## Aesthetic stance — required, not optional
 
