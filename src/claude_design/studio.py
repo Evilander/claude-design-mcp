@@ -241,8 +241,10 @@ class _HeadFinder(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
+        self.head_start_offset: int | None = None
         self.head_end_offset: int | None = None
         self.head_open_count = 0
+        self._template_depth = 0
         self._source: str = ""
 
     def feed_with_source(self, html: str) -> None:
@@ -251,7 +253,11 @@ class _HeadFinder(HTMLParser):
         self.close()
 
     def handle_starttag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
-        if tag.lower() != "head":
+        tag_name = tag.lower()
+        if tag_name == "template":
+            self._template_depth += 1
+            return
+        if tag_name != "head" or self._template_depth:
             return
         self.head_open_count += 1
         if self.head_end_offset is None:
@@ -259,9 +265,18 @@ class _HeadFinder(HTMLParser):
             # in the *source string* and walk to the end of the tag.
             line, col = self.getpos()
             start_idx = _line_col_to_index(self._source, line, col)
+            self.head_start_offset = start_idx
             # Advance to the first '>' after start to find end-of-tag.
-            close = self._source.find(">", start_idx)
-            self.head_end_offset = close + 1 if close != -1 else start_idx
+            raw = self.get_starttag_text()
+            if raw:
+                self.head_end_offset = start_idx + len(raw)
+            else:
+                close = self._source.find(">", start_idx)
+                self.head_end_offset = close + 1 if close != -1 else start_idx
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "template" and self._template_depth:
+            self._template_depth -= 1
 
 
 def _line_col_to_index(source: str, line: int, col: int) -> int:
@@ -293,6 +308,46 @@ def _strip_unsafe_meta_tags(html: str) -> str:
 
 def _apply_script_nonces(html: str, nonce: str) -> str:
     parser = _ScriptNonceRewriter(nonce)
+    parser.feed_with_source(html)
+    return parser.cleaned
+
+
+_PRE_POLICY_DROP_CONTENT_TAGS = frozenset({
+    "script",
+    "style",
+    "iframe",
+    "object",
+    "embed",
+    "svg",
+    "math",
+    "video",
+    "audio",
+    "picture",
+})
+_PRE_POLICY_DROP_TAGS = frozenset({
+    "base",
+    "link",
+    "meta",
+    "img",
+    "image",
+    "source",
+    "track",
+})
+_PRE_POLICY_URL_ATTRS = frozenset({
+    "action",
+    "data",
+    "formaction",
+    "href",
+    "manifest",
+    "poster",
+    "src",
+    "srcset",
+    "xlink:href",
+})
+
+
+def _sanitize_pre_policy_prefix(html: str) -> str:
+    parser = _PrePolicySanitizer()
     parser.feed_with_source(html)
     return parser.cleaned
 
@@ -346,6 +401,97 @@ class _UnsafeMetaStripper(HTMLParser):
 
     def handle_startendtag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
         self.handle_starttag(tag, attrs)
+
+
+class _PrePolicySanitizer(HTMLParser):
+    """Neutralize active content before the CSP meta is parsed by a browser."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.cleaned_chunks: list[str] = []
+        self._source: str = ""
+        self._cursor: int = 0
+        self._drop_stack: list[str] = []
+
+    @property
+    def cleaned(self) -> str:
+        tail = "" if self._drop_stack else self._source[self._cursor:]
+        return "".join(self.cleaned_chunks) + tail
+
+    def feed_with_source(self, html: str) -> None:
+        self._source = html
+        self.feed(html)
+        self.close()
+
+    def _flush_to(self, idx: int) -> None:
+        if idx > self._cursor:
+            self.cleaned_chunks.append(self._source[self._cursor:idx])
+            self._cursor = idx
+
+    def _tag_extent(self) -> tuple[int, int]:
+        line, col = self.getpos()
+        start = _line_col_to_index(self._source, line, col)
+        raw = self.get_starttag_text()
+        if raw:
+            return start, start + len(raw)
+        close = self._source.find(">", start)
+        end = close + 1 if close != -1 else start
+        return start, end
+
+    def _drop_tag(self) -> None:
+        start, end = self._tag_extent()
+        self._flush_to(start)
+        self._cursor = end
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
+        tag_name = tag.lower()
+        if self._drop_stack:
+            if tag_name in _PRE_POLICY_DROP_CONTENT_TAGS:
+                self._drop_stack.append(tag_name)
+            return
+        if tag_name in _PRE_POLICY_DROP_CONTENT_TAGS:
+            self._drop_tag()
+            self._drop_stack.append(tag_name)
+            return
+        if tag_name in _PRE_POLICY_DROP_TAGS:
+            self._drop_tag()
+            return
+        self._rewrite_tag_if_needed(tag, attrs, self_closing=False)
+
+    def handle_startendtag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
+        if self._drop_stack:
+            return
+        tag_name = tag.lower()
+        if tag_name in _PRE_POLICY_DROP_CONTENT_TAGS or tag_name in _PRE_POLICY_DROP_TAGS:
+            self._drop_tag()
+            return
+        self._rewrite_tag_if_needed(tag, attrs, self_closing=True)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._drop_stack:
+            return
+        tag_name = tag.lower()
+        if tag_name != self._drop_stack[-1]:
+            return
+        start, end = self._tag_extent()
+        self._cursor = end
+        self._drop_stack.pop()
+
+    def _rewrite_tag_if_needed(self, tag: str, attrs: list, *, self_closing: bool) -> None:
+        clean_attrs = []
+        changed = False
+        for name, value in attrs:
+            attr_name = (name or "").lower()
+            if attr_name.startswith("on") or attr_name in _PRE_POLICY_URL_ATTRS:
+                changed = True
+                continue
+            clean_attrs.append((name, value))
+        if not changed:
+            return
+        start, end = self._tag_extent()
+        self._flush_to(start)
+        self.cleaned_chunks.append(_build_start_tag(tag, clean_attrs, self_closing))
+        self._cursor = end
 
 
 class _ScriptNonceRewriter(HTMLParser):
@@ -408,7 +554,11 @@ class _ScriptNonceRewriter(HTMLParser):
 
 
 def _build_script_start_tag(attrs: list, self_closing: bool) -> str:
-    parts = ["<script"]
+    return _build_start_tag("script", attrs, self_closing)
+
+
+def _build_start_tag(tag: str, attrs: list, self_closing: bool) -> str:
+    parts = [f"<{tag}"]
     for name, value in attrs:
         if not name:
             continue
@@ -434,16 +584,16 @@ def inject_csp(html: str) -> str:
     cleaned = _apply_script_nonces(_strip_unsafe_meta_tags(html), nonce)
     finder = _HeadFinder()
     finder.feed_with_source(cleaned)
-    if finder.head_end_offset is not None:
-        idx = finder.head_end_offset
-        return cleaned[:idx] + "\n  " + csp_meta + cleaned[idx:]
-    # No real <head>: synthesize one after <!doctype> if present, else prepend.
-    m = _DOCTYPE_RE.search(cleaned)
+    if finder.head_start_offset is not None and finder.head_end_offset is not None:
+        prefix = _sanitize_pre_policy_prefix(cleaned[:finder.head_start_offset])
+        head_and_rest = cleaned[finder.head_start_offset:]
+        head_end = finder.head_end_offset - finder.head_start_offset
+        return prefix + head_and_rest[:head_end] + "\n  " + csp_meta + head_and_rest[head_end:]
+
+    # No real <head>: synthesize a policy-bearing head before all model content.
+    body = _DOCTYPE_RE.sub("", cleaned, count=1).lstrip()
     insert = f"\n<head>\n  {csp_meta}\n</head>"
-    if m:
-        idx = m.end()
-        return cleaned[:idx] + insert + cleaned[idx:]
-    return f"<!doctype html>{insert}\n{cleaned}"
+    return f"<!doctype html>{insert}\n{body}"
 
 
 def _atomic_write_text(path: Path, content: str) -> None:

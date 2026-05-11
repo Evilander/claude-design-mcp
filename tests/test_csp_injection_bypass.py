@@ -69,6 +69,65 @@ def test_csp_skips_decoy_head_inside_script_template():
     assert csp_idx > real_head_idx > 0
 
 
+def test_csp_skips_decoy_head_inside_real_template():
+    html = (
+        "<!doctype html><html>"
+        "<template><head>fake</head></template>"
+        "<head><title>real</title></head><body>x</body></html>"
+    )
+    out = inject_csp(html)
+    csp_idx = out.find(_OUR_CSP_NEEDLE)
+    template_head_idx = out.find("<head>fake</head>")
+    real_head_idx = out.find("<head>", template_head_idx + 1)
+
+    assert template_head_idx > 0
+    assert csp_idx > real_head_idx > template_head_idx
+    assert out.find(_OUR_CSP_NEEDLE, template_head_idx, real_head_idx) == -1
+
+
+def test_pre_head_script_is_stripped_before_csp_insertion():
+    html = (
+        "<!doctype html>"
+        "<script>window.exfiltrated = true</script>"
+        "<html><head><title>real</title></head><body>x</body></html>"
+    )
+    out = inject_csp(html)
+    csp_idx = out.find(_OUR_CSP_NEEDLE)
+    title_idx = out.find("<title>real</title>")
+
+    assert "exfiltrated" not in out
+    assert csp_idx < title_idx
+
+
+def test_pre_head_network_tags_are_stripped_before_csp_insertion():
+    html = (
+        "<!doctype html>"
+        '<base href="https://evil.example/">'
+        '<img src="https://evil.example/pixel.png" srcset="https://evil.example/2x.png 2x">'
+        "<html><head><title>real</title></head><body>x</body></html>"
+    )
+    out = inject_csp(html)
+
+    assert "evil.example" not in out
+    assert "<base" not in out.lower()
+    assert "<img" not in out.lower()
+    assert _OUR_CSP_NEEDLE in out
+
+
+def test_pre_head_event_handlers_are_stripped_before_csp_insertion():
+    html = (
+        "<!doctype html>"
+        '<body onload="steal()" onclick="steal()">'
+        "<html><head><title>real</title></head><main>x</main></html>"
+    )
+    out = inject_csp(html)
+
+    assert "onload" not in out.lower()
+    assert "onclick" not in out.lower()
+    assert "steal()" not in out
+    assert _OUR_CSP_NEEDLE in out
+
+
 def test_csp_strips_existing_csp_meta_even_with_spacing_variants():
     """A model-authored Content-Security-Policy meta must be removed before injection."""
     html = (

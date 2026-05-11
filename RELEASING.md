@@ -1,103 +1,98 @@
 # Releasing claude-design-mcp
 
-This project ships to PyPI via GitHub Actions Trusted Publishing (OIDC, no
-long-lived tokens). The workflow at `.github/workflows/release.yml` triggers
-on any `v*` tag push.
+This project publishes with GitHub Actions Trusted Publishing. No long-lived
+PyPI token is stored in the repo. The workflow is
+`.github/workflows/release.yml`.
 
-## One-time prerequisites (must be done before the first release)
+## One-Time Setup
 
-These steps are not in CI. They are configured manually on pypi.org and
-GitHub.com.
+### PyPI
 
-### 1. Reserve the PyPI project name
+Create a pending publisher at `https://pypi.org`:
 
-If `claude-design-mcp` is brand-new on PyPI (which it is for v0.2.0):
+- PyPI project name: `claude-design-mcp`
+- Owner: `Evilander`
+- Repository name: `claude-design-mcp`
+- Workflow filename: `release.yml`
+- Environment name: `pypi`
 
-- Log in to https://pypi.org as the project owner.
-- Go to **Your projects → Publishing → Add a new pending publisher**.
-- Fill in:
-  - **PyPI project name:** `claude-design-mcp`
-  - **Owner:** `Evilander`
-  - **Repository name:** `claude-design-mcp`
-  - **Workflow filename:** `release.yml`
-  - **Environment name:** `pypi`
-- Save. PyPI now waits for the first matching `v*` tag push to claim the
-  name.
+### TestPyPI
 
-For the test channel, repeat at https://test.pypi.org with the same fields
-except environment name `testpypi`.
+Create the matching pending publisher at `https://test.pypi.org`:
 
-### 2. Create GitHub Environments
+- PyPI project name: `claude-design-mcp`
+- Owner: `Evilander`
+- Repository name: `claude-design-mcp`
+- Workflow filename: `release.yml`
+- Environment name: `testpypi`
 
-On the repo settings page (`github.com/Evilander/claude-design-mcp/settings/environments`):
+### GitHub Environments
 
-- Create environment **`pypi`**.
-  - Add a required reviewer (yourself) so accidental tag pushes can't
-    auto-publish.
-  - Optional: restrict deployment to the `master` branch and to tag
-    pushes (`Deployment branches and tags → Selected branches and tags`).
-- Create environment **`testpypi`** with no required reviewer (so RCs
-  publish automatically).
+Create these repo environments:
 
-### 3. Confirm Trusted Publisher settings match the workflow
+- `testpypi`: for prerelease tags such as `v0.2.0-rc1`.
+- `pypi`: for final release tags such as `v0.2.0`.
 
-In `release.yml` the `environment:` field is `pypi`. Mismatched
-environment names cause a 403 from PyPI at publish time. The fix is to
-edit the pending-publisher entry on pypi.org, not the workflow.
+For `pypi`, require a manual reviewer so an accidental final tag cannot publish
+without approval. `testpypi` can stay unreviewed for fast RC validation.
 
-## Release cadence
+## Channels
 
-| Tag form     | Channel  | Environment | Manual approval |
-|--------------|----------|-------------|-----------------|
-| `v0.2.0-rc1` | TestPyPI | `testpypi`  | no              |
-| `v0.2.0`     | PyPI     | `pypi`      | yes (required)  |
+| Tag form | Channel | Environment | Approval |
+| --- | --- | --- | --- |
+| `v0.2.0-rc1` | TestPyPI | `testpypi` | optional |
+| `v0.2.0` | PyPI | `pypi` | required |
 
-The `release.yml` workflow ships to PyPI on any `v*` tag. The convention
-for RCs is to publish to TestPyPI only. If we ship RCs to PyPI directly,
-the manual-approval gate on the `pypi` environment is the safety net.
+The workflow routes any tag with a prerelease hyphen, for example `-rc1`, to
+TestPyPI. Final `v*` tags without a hyphen route to PyPI.
 
-## Release checklist
+Manual `workflow_dispatch` runs expose an explicit `repository` input with
+`testpypi` as the default.
+
+## Release Checklist
 
 Before tagging:
 
-- [ ] `pytest -q` passes (target: ≥ 164 tests, ruff clean).
-- [ ] `python -m build` produces wheel + sdist.
-- [ ] `python -m twine check dist/*` reports PASSED on both artifacts.
-- [ ] `scripts/smoke_mcp_stdio.py` lists ≥ 11 tools from a fresh package
-      install.
-- [ ] `claude-design-mcp --check-json | python -m json.tool` returns
-      `ok: true`.
-- [ ] CHANGELOG.md updated for the new version.
-- [ ] `pyproject.toml` `version` reflects the tag (or trusted to hatch-vcs
-      when we move).
+- [ ] `python -m ruff check src tests scripts` passes.
+- [ ] `python -m pytest -q` passes.
+- [ ] `python scripts/smoke_mcp_stdio.py` lists the expected MCP tools.
+- [ ] `python -m build` produces wheel and sdist artifacts.
+- [ ] `python -m twine check dist/*` reports `PASSED`.
+- [ ] `claude-design-mcp --check-json` returns `ok: true` for the core server.
+- [ ] Release notes or README status are current for the new version.
+- [ ] `pyproject.toml` `version` matches the tag.
 
-To tag and ship:
+To tag an RC:
 
 ```bash
-git tag -a v0.2.0 -m "v0.2.0 — DESIGN.md export, nonce CSP, PyPI release"
+git tag -a v0.2.0-rc1 -m "v0.2.0-rc1"
+git push origin v0.2.0-rc1
+```
+
+To tag a final release:
+
+```bash
+git tag -a v0.2.0 -m "v0.2.0"
 git push origin v0.2.0
 ```
 
-Watch the workflow at
-`github.com/Evilander/claude-design-mcp/actions`. For `pypi` environment
-pushes, you'll receive a "review required" prompt; approve to publish.
+Watch the workflow at:
 
-## What can fail at the PyPI step
+```text
+https://github.com/Evilander/claude-design-mcp/actions
+```
+
+## Common Failures
 
 | Symptom | Cause | Fix |
-|---|---|---|
-| 403 "Trusted publishing rejected" | Owner / repo / workflow / environment mismatch on pypi.org | Edit the pending publisher on pypi.org. |
-| "Environment 'pypi' not found" | GH environment not created | Create it in repo settings → environments. |
-| `id-token` permission denied | `permissions:` block missing from workflow | Already present in `release.yml`; do not remove. |
-| 400 "version already exists" | Tag matches an existing PyPI version | Bump the version. PyPI never accepts re-uploads of the same version. |
+| --- | --- | --- |
+| 403 trusted publishing rejected | Owner, repo, workflow, or environment mismatch | Edit the pending publisher on PyPI/TestPyPI. |
+| Environment not found | GitHub environment missing | Create `pypi` or `testpypi` in repo settings. |
+| `id-token` permission denied | Publish job lacks OIDC permission | Keep `id-token: write` on publish jobs. |
+| Version already exists | Package version was uploaded before | Bump the version; PyPI does not accept reuploads. |
 
 ## Rollback
 
-Once a version is on PyPI, it cannot be deleted (only yanked). The safe
-path is to ship a new version with the fix; yank the broken one only if
-it would actively mislead users.
-
-```
-# Yank from the PyPI UI: Your projects → claude-design-mcp →
-# Manage → Releases → "Yank release"
-```
+PyPI releases cannot be deleted and reuploaded. If a bad final release lands,
+ship a fixed patch version and yank the broken version from the PyPI UI only if
+the package would actively mislead users.
