@@ -21,12 +21,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from html import escape as html_escape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterator
@@ -198,28 +200,33 @@ def _safe_filename(name: str) -> str:
 
 # Strict CSP injected into every persisted HTML document. The directives:
 #   * default-src 'none'           — deny by default
-#   * script-src 'unsafe-inline'   — designs use inline JS for enhancement only
+#   * script-src 'nonce-...'       — allow only nonce-stamped inline scripts
 #   * style-src 'unsafe-inline' + Google Fonts host
 #   * font-src + img-src restricted to the same allowlist as renderer.py
 #   * connect-src 'none'           — block fetch/XHR/sendBeacon exfil
 #   * frame-ancestors 'none'       — designs may not be reframed
 #   * form-action 'none'           — model can't bounce a submit to anywhere
-_CSP_META = (
-    "<meta http-equiv=\"Content-Security-Policy\" content=\""
-    "default-src 'none'; "
-    "base-uri 'self'; "
-    "form-action 'none'; "
-    "frame-ancestors 'none'; "
-    "script-src 'none'; "
-    "style-src 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src https://fonts.gstatic.com data:; "
-    "img-src 'self' data: https://images.unsplash.com https://picsum.photos "
-    "https://fastly.picsum.photos https://placehold.co; "
-    "connect-src 'none'\">"
-)
+def _csp_meta(nonce: str) -> str:
+    return (
+        "<meta http-equiv=\"Content-Security-Policy\" content=\""
+        "default-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'none'; "
+        "frame-ancestors 'none'; "
+        f"script-src 'nonce-{nonce}'; "
+        "style-src 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com data:; "
+        "img-src 'self' data: https://images.unsplash.com https://picsum.photos "
+        "https://fastly.picsum.photos https://placehold.co; "
+        "connect-src 'none'\">"
+    )
 
 
 _DOCTYPE_RE = re.compile(r"<!doctype\s+html[^>]*>", re.IGNORECASE)
+
+
+def _generate_nonce() -> str:
+    return secrets.token_urlsafe(16)
 
 
 class _HeadFinder(HTMLParser):
@@ -284,6 +291,12 @@ def _strip_unsafe_meta_tags(html: str) -> str:
     return parser.cleaned
 
 
+def _apply_script_nonces(html: str, nonce: str) -> str:
+    parser = _ScriptNonceRewriter(nonce)
+    parser.feed_with_source(html)
+    return parser.cleaned
+
+
 class _UnsafeMetaStripper(HTMLParser):
     """Rewrite the source, dropping unsafe ``<meta http-equiv="...">`` tags."""
 
@@ -335,6 +348,78 @@ class _UnsafeMetaStripper(HTMLParser):
         self.handle_starttag(tag, attrs)
 
 
+class _ScriptNonceRewriter(HTMLParser):
+    """Strip model-authored script nonces and nonce-stamp inline scripts."""
+
+    def __init__(self, nonce: str) -> None:
+        super().__init__(convert_charrefs=False)
+        self.cleaned_chunks: list[str] = []
+        self._source: str = ""
+        self._cursor: int = 0
+        self._nonce = nonce
+
+    @property
+    def cleaned(self) -> str:
+        return "".join(self.cleaned_chunks) + self._source[self._cursor:]
+
+    def feed_with_source(self, html: str) -> None:
+        self._source = html
+        self.feed(html)
+        self.close()
+
+    def _flush_to(self, idx: int) -> None:
+        if idx > self._cursor:
+            self.cleaned_chunks.append(self._source[self._cursor:idx])
+            self._cursor = idx
+
+    def _tag_extent(self) -> tuple[int, int]:
+        line, col = self.getpos()
+        start = _line_col_to_index(self._source, line, col)
+        raw = self.get_starttag_text()
+        if raw:
+            return start, start + len(raw)
+        close = self._source.find(">", start)
+        end = close + 1 if close != -1 else start
+        return start, end
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
+        if tag.lower() != "script":
+            return
+        self._rewrite_script_tag(attrs, self_closing=False)
+
+    def handle_startendtag(self, tag: str, attrs: list) -> None:  # type: ignore[override]
+        if tag.lower() != "script":
+            return
+        self._rewrite_script_tag(attrs, self_closing=True)
+
+    def _rewrite_script_tag(self, attrs: list, *, self_closing: bool) -> None:
+        start, end = self._tag_extent()
+        self._flush_to(start)
+        clean_attrs = [
+            (name, value)
+            for name, value in attrs
+            if (name or "").lower() != "nonce"
+        ]
+        has_src = any((name or "").lower() == "src" for name, _ in clean_attrs)
+        if not has_src:
+            clean_attrs.append(("nonce", self._nonce))
+        self.cleaned_chunks.append(_build_script_start_tag(clean_attrs, self_closing))
+        self._cursor = end
+
+
+def _build_script_start_tag(attrs: list, self_closing: bool) -> str:
+    parts = ["<script"]
+    for name, value in attrs:
+        if not name:
+            continue
+        if value is None:
+            parts.append(f" {name}")
+        else:
+            parts.append(f' {name}="{html_escape(str(value), quote=True)}"')
+    parts.append(" />" if self_closing else ">")
+    return "".join(parts)
+
+
 def inject_csp(html: str) -> str:
     """Inject the strict CSP <meta> and strip unsafe model-authored meta tags.
 
@@ -344,15 +429,17 @@ def inject_csp(html: str) -> str:
     model can't downgrade our policy), ``<meta http-equiv="refresh">``, and
     ``<meta http-equiv="X-Frame-Options">``.
     """
-    cleaned = _strip_unsafe_meta_tags(html)
+    nonce = _generate_nonce()
+    csp_meta = _csp_meta(nonce)
+    cleaned = _apply_script_nonces(_strip_unsafe_meta_tags(html), nonce)
     finder = _HeadFinder()
     finder.feed_with_source(cleaned)
     if finder.head_end_offset is not None:
         idx = finder.head_end_offset
-        return cleaned[:idx] + "\n  " + _CSP_META + cleaned[idx:]
+        return cleaned[:idx] + "\n  " + csp_meta + cleaned[idx:]
     # No real <head>: synthesize one after <!doctype> if present, else prepend.
     m = _DOCTYPE_RE.search(cleaned)
-    insert = f"\n<head>\n  {_CSP_META}\n</head>"
+    insert = f"\n<head>\n  {csp_meta}\n</head>"
     if m:
         idx = m.end()
         return cleaned[:idx] + insert + cleaned[idx:]
