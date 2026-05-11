@@ -31,9 +31,9 @@ render = ["playwright>=1.59,<2"]
 dev = ["pytest>=7", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
 [project.urls]
-Homepage = "https://github.com/evilander/claude-design-mcp"
-Issues = "https://github.com/evilander/claude-design-mcp/issues"
-Source = "https://github.com/evilander/claude-design-mcp"
+Homepage = "https://github.com/Evilander/claude-design-mcp"
+Issues = "https://github.com/Evilander/claude-design-mcp/issues"
+Source = "https://github.com/Evilander/claude-design-mcp"
 
 [project.scripts]
 claude-design-mcp = "claude_design.server:main"
