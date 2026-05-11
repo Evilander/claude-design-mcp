@@ -547,13 +547,24 @@ class Designer:
         telemetry: dict[str, Any] = {}
         assistant_seen = False
 
+        async def _user_prompt_stream():
+            # SDK >= 0.1.80 requires an AsyncIterable[dict] when
+            # can_use_tool is set, even for one-shot prompts. Wrap the
+            # single user string in the documented streaming-mode dict shape.
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": user},
+                "parent_tool_use_id": None,
+                "session_id": "claude-design-mcp",
+            }
+
         async def _consume() -> None:
             nonlocal assistant_seen
             # Hold an explicit handle to the async generator so we can
             # aclose() it on cancellation / timeout. Without this, the
             # underlying `claude` CLI subprocess can survive the parent
             # task being cancelled — accumulating zombies over time.
-            agen = query(prompt=user, options=options)
+            agen = query(prompt=_user_prompt_stream(), options=options)
             try:
                 async for msg in agen:
                     if isinstance(msg, AssistantMessage):

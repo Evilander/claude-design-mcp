@@ -158,6 +158,86 @@ def test_design_system_prompt_is_latency_bounded():
     # latency under the 5s target on the fast tier.
     assert len(DESIGN_SYSTEM_PROMPT) < 6000
     assert "target 12-18 KB" in DESIGN_SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_designer_passes_prompt_as_async_iterable(monkeypatch):
+    """Regression: claude-agent-sdk >= 0.1.80 refuses ``prompt: str`` whenever
+    ``can_use_tool`` is set on ClaudeAgentOptions, raising
+
+        ValueError: can_use_tool callback requires streaming mode.
+        Please provide prompt as an AsyncIterable instead of a string.
+
+    Designer.generate_design sets ``can_use_tool=_deny_tool_use`` as defense
+    in depth, so it must wrap the user message in the documented streaming-
+    mode AsyncIterable[dict] shape. If a future refactor reverts to a string
+    prompt, every design_create / design_iterate / design_variants call will
+    fail in 0.0s with no model output. This test fails fast in that case.
+    """
+    captured = {}
+
+    async def fake_query(*, prompt, options):
+        # The contract change: prompt must be an AsyncIterable[dict], not str.
+        captured["prompt_type"] = type(prompt).__name__
+        # Drain the iterable so we can also assert the dict shape.
+        collected = []
+        async for item in prompt:
+            collected.append(item)
+        captured["prompt_items"] = collected
+
+        yield AssistantMessage(
+            content=[
+                TextBlock(
+                    "```html\n<!doctype html><html><head><title>x</title></head>"
+                    "<body>x</body></html>\n```\n```json\n"
+                    '{"title":"x","summary":"x","palette":[],"fonts":[],'
+                    '"tokens":{},"moves":[],"notes":"x"}\n```'
+                )
+            ],
+            model="test-model",
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=10,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(designer_module, "query", fake_query)
+    monkeypatch.delenv("CLAUDE_DESIGN_CLI_PATH", raising=False)
+
+    brief = "Hero section for a privacy-focused notes app."
+    draft = await Designer(query_timeout_s=5).generate_design(
+        brief=brief,
+        mode="landing",
+        viewport="desktop",
+    )
+
+    # Must NOT be a plain str (the regression we are guarding against).
+    assert captured["prompt_type"] != "str", (
+        f"prompt passed to query() was {captured['prompt_type']!r}; "
+        "claude-agent-sdk >= 0.1.80 requires an AsyncIterable when "
+        "can_use_tool is set. Wrap the user message in the documented "
+        "streaming-mode dict shape."
+    )
+
+    items = captured["prompt_items"]
+    assert items, "prompt async iterable must yield at least one message"
+    first = items[0]
+    assert isinstance(first, dict), "streaming-mode messages must be dicts"
+    assert first.get("type") == "user"
+    msg = first.get("message")
+    assert isinstance(msg, dict)
+    assert msg.get("role") == "user"
+    # The brief must reach Claude verbatim — drop this if you ever start
+    # transforming the user prompt mid-flight.
+    assert brief in str(msg.get("content", ""))
+    # The draft must round-trip through unchanged.
+    assert draft.html.startswith("<!doctype html>")
     assert "220 lines" in DESIGN_SYSTEM_PROMPT
 
 
