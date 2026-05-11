@@ -1,66 +1,50 @@
-# Rubric snapshot — v0.2.0-rc1 (2026-05-10)
+# Rubric snapshot - v0.2.0-rc1 post-review (2026-05-10)
 
-Captured at the moment v0.2.0-rc1 was tagged.
+This note supersedes the first RC snapshot after the adversarial review found
+two CSP placement blockers and one release-channel mismatch.
 
-| # | Dimension | Score | Δ | Evidence |
-|---|-----------|------:|---:|---|
-| 1 | WORKS     |  9/10 | +1 | 168 tests pass, ruff clean, wheel + sdist build clean, twine PASSED, --demo works |
-| 2 | OBVIOUS   |  7/10 | +1 | 4-command Quick Start (PyPI + source), --demo, --check-json, RELEASING.md |
-| 3 | FAST      |  7/10 |  0 | Bound by Claude latency; warm browser pool; cache deferred |
-| 4 | SOLID     |  9/10 | +2 | Nonce CSP closes HIGH-2; SVG meta-refresh tested; OAuth scrub; 2 MiB cap |
-| 5 | TESTED    |  8/10 | +1 | 117 → 168 tests; nonce + foreign-content + DESIGN.md + OAuth coverage |
-| 6 | ALIVE     |  7/10 | +1 | README has voice; security section is opinionated; DESIGN.md scope honest |
-| 7 | MONEY     |  6/10 | +2 | **BLOCKING** — DESIGN.md interop shipped, headline framing still mid; no gallery |
-| 8 | ELEGANT   |  8/10 |  0 | Architecture preserved; design_md.py defensive; hand-rolled YAML |
-| 9 | READY     |  8/10 | +2 | CI workflows, RELEASING.md, twine PASSED, version 0.2.0 |
-| 10| ORIGINAL  |  7/10 | +1 | First MCP that emits valid Google DESIGN.md; import in 0.3 |
+## Verified locally after fixes
 
-**Average: 7.6 (was 6.5).** Single dimension under 7.
+- `python -m ruff check src tests scripts`: passed.
+- `python -m pytest -q`: 172 passed.
+- `python scripts/smoke_mcp_stdio.py`: passed, 11 MCP tools listed.
+- `python -m build`: passed, wheel and sdist built.
+- `python -m twine check dist/*`: both artifacts passed.
 
-## Verdict for v0.2.0-rc1
+## Scores
 
-**SHIP THE RC.** The one blocking dimension (MONEY) is a market problem,
-not a code-fix problem. It moves with examples gallery + sharper headline
-framing (M2 work), not with another nonce hardening pass.
+| # | Dimension | Score | Evidence |
+| --- | --- | ---: | --- |
+| 1 | WORKS | 9/10 | Ruff, 172 tests, MCP smoke, build, and twine checks pass. |
+| 2 | OBVIOUS | 8/10 | README has PyPI/source quick starts, render notes, demo, and check-json flow. |
+| 3 | FAST | 7/10 | Bound by Claude latency; warm renderer pool and readiness cache remain. |
+| 4 | SOLID | 9/10 | Pre-head CSP bypasses, template decoy heads, nonce handling, OAuth scrub, and 2 MiB cap covered. |
+| 5 | TESTED | 9/10 | CSP adversarial coverage now includes pre-policy script/img/base/event payloads and real template decoys. |
+| 6 | ALIVE | 7/10 | README presents a clear product stance and honest beta status. |
+| 7 | MONEY | 6/10 | Still needs examples gallery and sharper customer proof before final release. |
+| 8 | ELEGANT | 8/10 | Existing architecture preserved; hardening stayed inside the persistence boundary. |
+| 9 | READY | 8/10 | Release workflow now routes prerelease tags to TestPyPI and final tags to PyPI. |
+| 10 | ORIGINAL | 7/10 | DESIGN.md bridge plus persistent local design lineage remains the differentiated angle. |
 
-The rubric's "below 7 = NOT PRODUCTION READY" rule applies to v0.2.0
-**final**, not v0.2.0-rc1. The RC is for pipeline validation and
-real-world install testing — close the MONEY gap before v0.2.0 final.
+Average: 7.8. One product-market dimension remains below 7 for the final
+release bar, but the RC is suitable for install and pipeline validation.
 
-## What the RC validates
+## Review findings closed
 
-- The Trusted Publishing pipeline end-to-end (after the one-time pypi.org
-  pending-publisher setup documented in RELEASING.md §1).
-- The CI matrix on Python 3.10–3.13 × {ubuntu, windows}.
-- Real-world `uv tool install` from TestPyPI in a fresh venv.
-- DESIGN.md emit + validate against the live `@google/design.md lint` CLI
-  in CI.
+- P0: Pre-head executable/resource content could run before the injected CSP.
+  Fixed by sanitizing the prefix before the real head.
+- P0: Real `<template><head>fake</head></template>` could catch CSP insertion.
+  Fixed by ignoring template contents while locating the document head.
+- P1: RC docs claimed TestPyPI routing while the workflow published every
+  `v*` tag to PyPI. Fixed with separate TestPyPI and PyPI publish jobs.
+- P2: README exposed `playwright install chromium` without ensuring the
+  Playwright executable is installed by `uv tool install`. Fixed with
+  `--with-executables-from playwright`.
+- P2: Evidence note was stale. Updated to the final local verification above.
 
-## To reach 7 on MONEY before v0.2.0 final
+## Remaining before v0.2.0 final
 
-1. Examples gallery: 3 case-study designs with prompts + outputs + a POV
-   statement. (M1 step 10 in the ship plan.)
-2. README headline rewrite: lead with "DESIGN.md bridge" before "studio".
-3. One external user try the install path and report back.
-
-## Files in the worktree at this snapshot
-
-```
-B:\projects\claude\claude-design-mcp-ship  (branch feat/ship-claude-design-mcp)
-├── README.md                (+ DESIGN.md Export section, scoped)
-├── RELEASING.md             (NEW — Trusted Publishing prereqs)
-├── pyproject.toml           (v0.2.0, pinned deps, project.urls)
-├── .github/workflows/
-│   ├── release.yml          (Trusted Publishing, environment: pypi)
-│   └── test.yml             (matrix 3.10–3.13 × {ubuntu, windows})
-├── src/claude_design/
-│   ├── design_md.py         (NEW — emit_design_md + validate_design_md_via_cli)
-│   ├── studio.py            (nonce CSP, HTML-parser injection, 2 MiB cap)
-│   ├── designer.py          (OAuth env scrub, xhigh effort, api_error_status)
-│   ├── renderer.py          (service_workers="block", channel="chromium")
-│   └── prompts.py           (aesthetic stance, banned reflexes)
-├── tests/                   (168 passing — 14 new files this autopilot run)
-└── scripts/
-    ├── smoke_mcp_stdio.py   (CI gate)
-    └── dogfood_smoke.py     (manual install validation)
-```
+1. Build an examples gallery with 3 case-study designs, prompts, outputs, and
+   a concise point of view.
+2. Have one external user run the PyPI or TestPyPI install path from scratch.
+3. Keep the `pypi` environment approval gate enabled for final tags.

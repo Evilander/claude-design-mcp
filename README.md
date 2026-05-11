@@ -31,7 +31,7 @@ Prerequisites:
 
 ```powershell
 claude login
-uv tool install "claude-design-mcp[render]"
+uv tool install "claude-design-mcp[render]" --with-executables-from playwright
 playwright install chromium
 
 claude mcp add --scope user claude-design -- claude-design-mcp
@@ -46,7 +46,7 @@ git clone https://github.com/Evilander/claude-design-mcp.git
 cd claude-design-mcp
 
 claude login
-uv tool install ".[render]"
+uv tool install ".[render]" --with-executables-from playwright
 playwright install chromium
 
 claude mcp add --scope user claude-design -- claude-design-mcp
@@ -56,7 +56,7 @@ claude-design-mcp --demo
 
 `--check-json` prints machine-readable readiness diagnostics for the Claude CLI, studio path, Playwright, temp directory, and browser payload. `--demo` creates three local demo designs without calling a model, which makes install validation cheap and repeatable.
 
-> **Render extra:** the `[render]` qualifier installs Playwright. Without it, design generation and persistence still work; only screenshot rendering is disabled. `--check-json` reports this explicitly.
+> **Render extra:** the `[render]` qualifier installs Playwright. `--with-executables-from playwright` exposes the `playwright` CLI used to install Chromium. Without `[render]`, design generation and persistence still work; only screenshot rendering is disabled. `--check-json` reports this explicitly.
 
 ## Using It From Claude
 
@@ -112,7 +112,7 @@ design_validate_design_md(design_md_path="...")
 
 Use this when a visual direction should move from design exploration into implementation. `DESIGN.md` gives downstream coding agents stable tokens, component guidance, accessibility notes, and implementation constraints without copying giant HTML blobs through chat.
 
-> **Scope in 0.2:** export is one-way. We emit valid 8-section `DESIGN.md` and shell out to `npx @google/design.md lint` to validate it. Import (`DESIGN.md` → `SystemRecord` → `design_apply_system`) lands in 0.3 along with `design_diff` and region-pinned iterate. Track the roadmap in `notes/ultraplan-2026-05-10/ship-claude-design-mcp.md`.
+> **Scope in 0.2:** export is one-way. We emit valid 8-section `DESIGN.md` and shell out to `npx @google/design.md lint` to validate it. Import (`DESIGN.md` -> `SystemRecord` -> `design_apply_system`) lands in 0.3 along with `design_diff` and region-pinned iterate. Track the roadmap in `notes/ultraplan-2026-05-10/ship-claude-design-mcp.md`.
 
 ## Configuration
 
