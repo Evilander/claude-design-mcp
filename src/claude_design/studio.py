@@ -210,7 +210,7 @@ _CSP_META = (
     "base-uri 'self'; "
     "form-action 'none'; "
     "frame-ancestors 'none'; "
-    "script-src 'unsafe-inline'; "
+    "script-src 'none'; "
     "style-src 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src https://fonts.gstatic.com data:; "
     "img-src 'self' data: https://images.unsplash.com https://picsum.photos "

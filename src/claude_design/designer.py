@@ -21,7 +21,10 @@ import os
 import re
 import shutil
 import sys
+import threading
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
@@ -34,6 +37,7 @@ from claude_agent_sdk import (
     TextBlock,
     query,
 )
+from claude_agent_sdk.types import PermissionResultDeny
 
 from . import prompts
 
@@ -110,7 +114,16 @@ def _env_max_buffer_size() -> int:
 def _env_cli_path() -> str | None:
     raw = (os.environ.get("CLAUDE_DESIGN_CLI_PATH") or "").strip()
     if raw:
-        return raw
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError(
+                "CLAUDE_DESIGN_CLI_PATH must be an absolute path to the Claude CLI. "
+                "Unset it to use PATH auto-discovery."
+            )
+        resolved = candidate.resolve()
+        if not resolved.is_file():
+            raise ValueError(f"CLAUDE_DESIGN_CLI_PATH is not an executable file: {raw}")
+        return str(resolved)
     return shutil.which("claude") or shutil.which("claude.exe")
 
 
@@ -167,11 +180,22 @@ def _build_oauth_safe_env() -> dict[str, str]:
     return env
 
 
-from contextlib import contextmanager  # noqa: E402 — grouped with helpers above
+_OAUTH_ENV_LOCKS: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+_OAUTH_ENV_LOCKS_GUARD = threading.Lock()
 
 
-@contextmanager
-def _oauth_only_environ():
+def _oauth_env_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _OAUTH_ENV_LOCKS_GUARD:
+        lock = _OAUTH_ENV_LOCKS.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _OAUTH_ENV_LOCKS[loop] = lock
+        return lock
+
+
+@asynccontextmanager
+async def _oauth_only_environ():
     """Temporarily remove auth-override env vars from ``os.environ``.
 
     The Claude Agent SDK merges its ``options.env`` on top of the inherited
@@ -180,23 +204,33 @@ def _oauth_only_environ():
     ``options.env``. Mutating the real process env for the duration of the
     SDK call is the only reliable way to force OAuth.
 
-    The mutation is restored on exit, including on exception. Concurrent
-    SDK calls in the same process share the same env, which is fine here
-    because we always restore the same key set — the worst that can happen
-    is one call restores an already-restored key.
+    The mutation is restored on exit, including on exception. Scrubbed calls
+    are serialized per event loop so parallel variants cannot restore an API
+    key while another SDK subprocess is still being created.
     """
     if _allow_api_key_override():
         yield
         return
-    saved: dict[str, str] = {}
-    try:
-        for name in _AUTH_OVERRIDE_ENV_VARS:
-            if name in os.environ:
-                saved[name] = os.environ.pop(name)
-        yield
-    finally:
-        for name, value in saved.items():
-            os.environ[name] = value
+    async with _oauth_env_lock():
+        saved: dict[str, str] = {}
+        try:
+            for name in _AUTH_OVERRIDE_ENV_VARS:
+                if name in os.environ:
+                    saved[name] = os.environ.pop(name)
+            yield
+        finally:
+            for name, value in saved.items():
+                os.environ[name] = value
+
+
+async def _deny_tool_use(
+    tool_name: str,
+    _tool_input: dict[str, Any],
+    _context: Any,
+) -> PermissionResultDeny:
+    return PermissionResultDeny(
+        message=f"Tool use is disabled for claude-design-mcp design calls: {tool_name}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +519,8 @@ class Designer:
             system_prompt=prompts.DESIGN_SYSTEM_PROMPT,
             tools=[],
             allowed_tools=[],
+            disallowed_tools=["*"],
+            can_use_tool=_deny_tool_use,
             permission_mode="dontAsk",
             max_turns=1,
             cli_path=_env_cli_path(),
@@ -525,6 +561,16 @@ class Designer:
                     elif isinstance(msg, ResultMessage):
                         if msg.is_error:
                             joined = "; ".join(msg.errors or []) or "unknown error"
+                            status = getattr(msg, "api_error_status", None)
+                            if status == 429:
+                                raise DesignerError(
+                                    "Claude rate-limited the request (429). Wait a few "
+                                    "seconds and retry, or lower `count` on design_variants."
+                                )
+                            if isinstance(status, int) and 500 <= status < 600:
+                                raise DesignerError(
+                                    f"Claude server error ({status}); try again shortly."
+                                )
                             raise DesignerError(f"Claude returned an error: {joined}")
                         if msg.usage:
                             telemetry.update(msg.usage)
@@ -562,7 +608,7 @@ class Designer:
             # mutation window is the SDK call only; concurrent callers in the
             # same process share the same env, which is fine because we
             # always restore the same key set.
-            with _oauth_only_environ():
+            async with _oauth_only_environ():
                 await asyncio.wait_for(_consume(), timeout=self._query_timeout_s)
         except asyncio.TimeoutError as e:
             raise DesignerError(

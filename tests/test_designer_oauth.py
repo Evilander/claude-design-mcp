@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
@@ -40,6 +42,13 @@ def test_designer_prefers_path_claude_cli_when_env_absent(monkeypatch):
     )
 
     assert designer_module._env_cli_path() == "/usr/local/bin/claude"
+
+
+def test_configured_cli_path_must_be_absolute(monkeypatch):
+    monkeypatch.setenv("CLAUDE_DESIGN_CLI_PATH", ".\\fake-claude.exe")
+
+    with pytest.raises(ValueError, match="absolute path"):
+        designer_module._env_cli_path()
 
 
 def test_assistant_error_messages_cover_all_known_subtypes():
@@ -111,6 +120,8 @@ async def test_designer_sdk_options_are_oauth_only_and_toolless(monkeypatch):
     assert draft.html.startswith("<!doctype html>")
     assert options.tools == []
     assert options.allowed_tools == []
+    assert options.disallowed_tools == ["*"]
+    assert callable(options.can_use_tool)
     assert options.permission_mode == "dontAsk"
     assert options.extra_args == {
         "disable-slash-commands": None,
@@ -121,6 +132,23 @@ async def test_designer_sdk_options_are_oauth_only_and_toolless(monkeypatch):
     assert options.thinking == {"type": "disabled"}
     assert options.effort == "low"
     assert callable(options.stderr)
+
+
+@pytest.mark.asyncio
+async def test_oauth_environ_scrub_is_serialized(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-test")
+    observed = []
+
+    async def scrubbed_window():
+        async with designer_module._oauth_only_environ():
+            observed.append("ANTHROPIC_API_KEY" not in designer_module.os.environ)
+            await asyncio.sleep(0.01)
+            observed.append("ANTHROPIC_API_KEY" not in designer_module.os.environ)
+
+    await asyncio.gather(scrubbed_window(), scrubbed_window())
+
+    assert observed == [True, True, True, True]
+    assert designer_module.os.environ["ANTHROPIC_API_KEY"] == "sk-ant-api03-test"
 
 
 def test_design_system_prompt_is_latency_bounded():

@@ -20,6 +20,17 @@ def test_env_override_takes_effect(monkeypatch, tmp_path: Path):
     assert studio().root == target.resolve()
 
 
+def test_default_falls_back_to_cwd_when_home_data_dir_unwritable(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("CLAUDE_DESIGN_STUDIO_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    import claude_design.server as srv
+
+    monkeypatch.setattr(srv, "_can_create_under", lambda path: False)
+    srv._reset_singletons()
+
+    assert _resolve_studio_dir() == (tmp_path / "studio").resolve()
+
+
 def test_filesystem_root_rejected(monkeypatch):
     if os.name == "nt":
         monkeypatch.setenv("CLAUDE_DESIGN_STUDIO_DIR", "C:\\")

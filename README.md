@@ -4,13 +4,16 @@
 > ability into a persistent design studio — with versioning, parallel variants,
 > screenshot rendering, and design-system extraction.
 
-This is **not** a wrapper around `messages.create`. It's a real design REPL:
+This is **not** a wrapper around `messages.create`. It's a real design REPL.
+Designs export to Google DESIGN.md so other tools (Claude Code, Cursor, Stitch)
+can consume the system directly — no JSON wrangling.
 
 - `design_create` — generate a self-contained HTML/CSS design from a brief.
 - `design_iterate` — refine an existing design, preserving lineage as a tree.
 - `design_variants` — fan out N parallel takes along one dimension (color, mood, layout, density…).
 - `design_render` — Playwright-rendered screenshots at mobile / tablet / desktop / wide / hd.
-- `design_extract_system` — distill a coherent design system (tokens, components, principles) from one or more designs.
+- `design_extract_system(format="design-md")` — distill a coherent design system from one or more designs and optionally emit Google DESIGN.md.
+- `design_validate_design_md` — lint a DESIGN.md document with Google's validator and surface spec/WCAG results.
 - `design_apply_system` — generate a new design that strictly follows a saved system.
 - `design_get` / `design_list` — browse the studio.
 - `design_export` — package any design or system as a portable folder + zip.
@@ -54,22 +57,26 @@ If `claude` runs interactively for you, this server can call Claude.
 #    and log in:
 claude login
 
-# 2. From this repo's directory:
-pip install -e .
+# 2. From this repo's directory, install the MCP as a tool:
+uv tool install ".[render]"
 
-# 3. Optional: enable screenshot rendering
-pip install -e ".[render]"
+# 3. Install Chromium for screenshot rendering:
 playwright install chromium
 
-# 4. Verify everything is wired up
-claude-design-mcp --check
+# 4. Wire it into Claude Code:
+claude mcp add --scope user claude-design -- claude-design-mcp
+
+# 5. Verify everything is wired up, then create local demo designs:
 claude-design-mcp --check-json
+claude-design-mcp --demo
 ```
 
 `--check` reports the studio dir, Playwright availability, and the
 `claude` CLI version + path. There is no API key to set.
 `--check-json` prints the same readiness signal as machine-readable JSON for
 installers, CI, and support scripts.
+`--demo` creates three fixture designs without making a Claude model call, so
+first-contact setup can be tested without OAuth spend or network dependency.
 
 On locked-down Windows hosts, Playwright may be unable to use the default
 user temp directory. Set `CLAUDE_DESIGN_PLAYWRIGHT_TMP` to a writable local
@@ -80,7 +87,8 @@ back only when the host closes sandboxed pages before rendering.
 
 ## Wire it into Claude Code
 
-Add to `~/.claude/settings.json` under `mcpServers`:
+The `claude mcp add` command above writes the Claude Code config for you. For
+manual Claude Desktop setup, use:
 
 ```json
 {
@@ -96,7 +104,8 @@ Add to `~/.claude/settings.json` under `mcpServers`:
 }
 ```
 
-No env block at all is also fine — every variable has a default. See
+No env block at all is also fine — the default studio is
+`~/.claude-design/studio`. See
 `claude_desktop_config.example.json` for a Claude Desktop variant.
 
 ## Usage examples
@@ -106,6 +115,7 @@ Once wired up, just ask Claude:
 - *"Use claude-design to make a hero section for a privacy-focused note app, dark mode, glassmorphism."*
 - *"Make 4 variants of `<design-id>` exploring mood — playful, brutalist, editorial, minimal."*
 - *"Extract a design system from the last three designs and apply it to a checkout page."*
+- *"Extract a DESIGN.md from your last three designs and hand it to Claude Code."*
 - *"Open the studio contact sheet."*
 
 ## How it works
@@ -137,9 +147,9 @@ cost across renders.
 | --- | --- | --- |
 | `CLAUDE_DESIGN_MODEL` | `claude-sonnet-4-6` | Fast tier model. |
 | `CLAUDE_DESIGN_MODEL_OPUS` | `claude-opus-4-7` | Best tier model. |
-| `CLAUDE_DESIGN_STUDIO_DIR` | `./studio` | Where designs live. |
+| `CLAUDE_DESIGN_STUDIO_DIR` | `~/.claude-design/studio` | Where designs live. |
 | `CLAUDE_DESIGN_AUTO_RENDER` | `auto` | `1`/`0`/`auto` — auto screenshot on create/iterate. |
-| `CLAUDE_DESIGN_CLI_PATH` | auto | Optional explicit path to the `claude` CLI. |
+| `CLAUDE_DESIGN_CLI_PATH` | auto | Optional absolute path to the `claude` CLI. Relative paths are refused. |
 | `CLAUDE_DESIGN_PLAYWRIGHT_TMP` | auto | Writable temp directory for Playwright launch/download operations. |
 | `CLAUDE_DESIGN_PLAYWRIGHT_BROWSERS_PATH` | auto | Optional browser payload directory for local Playwright installs. |
 | `CLAUDE_DESIGN_CHROMIUM_SANDBOX` | `auto` | `auto`, `1`, or `0`; controls Chromium sandbox fallback for screenshots. |
@@ -147,6 +157,7 @@ cost across renders.
 | `CLAUDE_DESIGN_THINKING` | `disabled` | Thinking mode for design calls: `disabled`, `adaptive`, or `none`. |
 | `CLAUDE_DESIGN_MAX_BUFFER_BYTES` | `8388608` | SDK stdout JSON buffer cap for large HTML responses. |
 | `CLAUDE_DESIGN_ALLOW_API_KEY` | `0` | Set `1` to keep `ANTHROPIC_API_KEY` / Bedrock / Vertex env vars in the subprocess instead of scrubbing for OAuth. |
+| `CLAUDE_DESIGN_ENV_FILE` | unset | Optional explicit dotenv file. Only `CLAUDE_DESIGN_*` keys are loaded; cwd `.env` files are ignored. |
 
 Authentication comes from the local `claude` CLI's OAuth session — there
 is no API-key env var to set.

@@ -10,16 +10,27 @@ This package exposes an MCP server that turns Claude into a persistent design st
 Entry point: ``claude_design.server.main``.
 """
 
-# Load .env BEFORE any submodule import so module-level env reads see it.
-# Without this, ``designer.DEFAULT_MODEL_FAST`` would freeze to the hard-coded
-# default before .env-set overrides became visible.
+import os as _os
 from pathlib import Path as _Path
 
-from dotenv import load_dotenv as _load_dotenv
+from dotenv import dotenv_values as _dotenv_values
 
-_PKG_ROOT = _Path(__file__).resolve().parent.parent.parent
-for _candidate in (_PKG_ROOT / ".env", _Path.cwd() / ".env"):
-    if _candidate.exists():
-        _load_dotenv(_candidate, override=False)
 
-__version__ = "0.1.0"
+_ENV_KEY_PREFIX = "CLAUDE_DESIGN_"
+_EXPLICIT_ENV_FILE = (_os.environ.get("CLAUDE_DESIGN_ENV_FILE") or "").strip()
+
+
+def _load_explicit_env_file(raw_path: str) -> None:
+    path = _Path(raw_path).expanduser().resolve()
+    if not path.is_file():
+        return
+    for key, value in _dotenv_values(path).items():
+        if not key.startswith(_ENV_KEY_PREFIX) or value is None:
+            continue
+        _os.environ.setdefault(key, value)
+
+
+if _EXPLICIT_ENV_FILE:
+    _load_explicit_env_file(_EXPLICIT_ENV_FILE)
+
+__version__ = "0.2.0"

@@ -20,6 +20,19 @@ def test_renderer_allows_local_and_exact_https_hosts():
     assert _is_allowed_request_url("https://images.unsplash.com/photo.jpg") is True
 
 
+def test_renderer_file_allowlist_can_be_scoped_to_local_root(tmp_path: Path):
+    root = tmp_path / "studio" / "designs"
+    root.mkdir(parents=True)
+    html = root / "abc.html"
+    html.write_text("<!doctype html>", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope", encoding="utf-8")
+
+    assert _is_allowed_request_url(html.as_uri(), main_file_url=html.as_uri(), local_root=root)
+    assert _is_allowed_request_url((root / "asset.png").as_uri(), local_root=root)
+    assert not _is_allowed_request_url(secret.as_uri(), main_file_url=html.as_uri(), local_root=root)
+
+
 def test_renderer_blocks_substring_host_bypass():
     assert _is_allowed_request_url("https://evil.test/?next=fonts.googleapis.com") is False
     assert _is_allowed_request_url("https://fonts.googleapis.com.evil.test/css") is False
@@ -71,6 +84,27 @@ def test_browser_status_uses_configured_browser_path_without_dry_run(
     monkeypatch.setattr(renderer_module.subprocess, "run", forbidden_run)
 
     assert Renderer._browser_install_status() == {"ok": True, "executable": str(exe)}
+
+
+def test_readiness_is_cached(monkeypatch):
+    calls = {"browser": 0}
+    Renderer.clear_readiness_cache()
+
+    monkeypatch.setattr(
+        renderer_module,
+        "_configure_runtime_environment",
+        lambda apply=False: {"temp_dir": {"ok": True}, "browsers_path": None},
+    )
+
+    def browser_status(*, candidate_path=None):  # noqa: ARG001
+        calls["browser"] += 1
+        return {"ok": True, "executable": "chromium"}
+
+    monkeypatch.setattr(Renderer, "_browser_install_status", staticmethod(browser_status))
+
+    assert Renderer.readiness()["ready"] is True
+    assert Renderer.readiness()["ready"] is True
+    assert calls["browser"] == 1
 
 
 def test_sandbox_policy_env(monkeypatch):

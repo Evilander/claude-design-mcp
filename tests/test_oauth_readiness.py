@@ -121,10 +121,13 @@ def test_check_report_signals_preserved_override_when_allow_flag_set(tmp_path, m
 
 def test_resolve_studio_dir_exports_default_for_renderer(monkeypatch):
     monkeypatch.delenv("CLAUDE_DESIGN_STUDIO_DIR", raising=False)
+    monkeypatch.setattr(server, "_can_create_under", lambda path: True)
 
     resolved = server._resolve_studio_dir()
 
     assert Path(os.environ["CLAUDE_DESIGN_STUDIO_DIR"]) == resolved
+    assert resolved.name == "studio"
+    assert resolved.parent.name == ".claude-design"
 
 
 def test_claude_cli_status_respects_configured_cli_path(monkeypatch):
@@ -142,7 +145,7 @@ def test_claude_cli_status_reports_bad_configured_cli_path(monkeypatch):
     status = server._claude_cli_status()
 
     assert status["ok"] is False
-    assert "CLAUDE_DESIGN_CLI_PATH is set" in status["line"]
+    assert "CLAUDE_DESIGN_CLI_PATH must be an absolute executable path" in status["line"]
 
 
 def test_render_readiness_error_names_temp_blocker():
