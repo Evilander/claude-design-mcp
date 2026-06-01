@@ -520,7 +520,14 @@ class Designer:
             tools=[],
             allowed_tools=[],
             disallowed_tools=["*"],
-            can_use_tool=_deny_tool_use,
+            # NOTE: do NOT pass can_use_tool here. In claude-agent-sdk >=0.1.81
+            # supplying a can_use_tool callback forces streaming-input mode,
+            # which requires `prompt` to be an AsyncIterable; with the plain
+            # string prompt used below the SDK raises
+            #   "can_use_tool callback requires streaming mode."
+            # and every design generation fails. Tool use is already fully
+            # blocked by tools=[] + allowed_tools=[] + disallowed_tools=["*"] +
+            # max_turns=1, so the _deny_tool_use callback was redundant.
             permission_mode="dontAsk",
             max_turns=1,
             cli_path=_env_cli_path(),

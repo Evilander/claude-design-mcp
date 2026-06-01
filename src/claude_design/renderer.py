@@ -319,7 +319,13 @@ class Renderer:
                 [sys.executable, "-m", "playwright", "install", "chromium", "--dry-run"],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                # This spawns Playwright's bundled Node driver. Its first cold
+                # run on Windows can exceed 15s under Defender real-time
+                # scanning (warm runs are ~2s). Because readiness() caches the
+                # result for the process lifetime, a single cold timeout wedges
+                # rendering for the whole server session even though Chromium is
+                # correctly installed. 60s tolerates the cold start.
+                timeout=60,
                 env=os.environ.copy(),
             )
         except (OSError, subprocess.TimeoutExpired) as e:
