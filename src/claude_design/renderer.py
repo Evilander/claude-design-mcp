@@ -194,6 +194,26 @@ def _find_chromium_executable(root: Path) -> str | None:
     return None
 
 
+def _default_playwright_browsers_path() -> str | None:
+    """Playwright's per-OS default browser cache location.
+
+    When neither PLAYWRIGHT_BROWSERS_PATH nor a studio-local browser dir is
+    configured, Playwright installs browsers here. Probing it directly lets the
+    readiness check find an existing Chromium via the fast filesystem path
+    instead of falling back to the slow `playwright install --dry-run`
+    subprocess (which spawns the bundled Node driver and can hang for many
+    seconds on Windows under antivirus scanning).
+    """
+    if sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA") or str(
+            Path.home() / "AppData" / "Local"
+        )
+        return str(Path(local) / "ms-playwright")
+    if sys.platform == "darwin":
+        return str(Path.home() / "Library" / "Caches" / "ms-playwright")
+    return str(Path.home() / ".cache" / "ms-playwright")
+
+
 def _sandbox_candidates() -> list[bool]:
     raw = (os.environ.get("CLAUDE_DESIGN_CHROMIUM_SANDBOX") or "auto").strip().lower()
     if raw in {"1", "true", "yes", "on", "required"}:
@@ -306,7 +326,15 @@ class Renderer:
         # wasn't actually exported to os.environ. Without this, readiness lies
         # on hosts that keep Chromium under <studio>/playwright-browsers/.
         candidates: list[str] = []
-        for value in (candidate_path, os.environ.get("PLAYWRIGHT_BROWSERS_PATH")):
+        for value in (
+            candidate_path,
+            os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
+            # Fall back to Playwright's per-OS default cache. Without this, a
+            # standard `playwright install chromium` (which targets the default
+            # location) is invisible to the fast filesystem probe, forcing the
+            # slow `playwright install --dry-run` subprocess on every call.
+            _default_playwright_browsers_path(),
+        ):
             if value and value.strip() and value not in candidates:
                 candidates.append(value.strip())
         for path in candidates:
