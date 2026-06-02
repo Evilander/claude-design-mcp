@@ -736,7 +736,15 @@ async def design_validate_design_md(params: DesignValidateDesignMdInput) -> str:
         str: JSON with keys `ok` (bool|null), `warnings`, `errors`,
         `wcag_failures`, and `raw_output`.
     """
-    return _ok(validate_design_md_via_cli(params.design_md_path))
+    # Run the blocking `npx ... lint` subprocess in a worker thread so it never
+    # stalls the single asyncio loop that also serves the stdio JSON-RPC
+    # transport. A synchronous `subprocess.run` here starves the transport for
+    # the duration of the lint (longer on the first-run npx fetch), which the
+    # client sees as a dropped connection (-32000: Connection closed).
+    result = await asyncio.to_thread(
+        validate_design_md_via_cli, params.design_md_path
+    )
+    return _ok(result)
 
 
 # ---- Tool: design_apply_system -----------------------------------------
