@@ -97,6 +97,8 @@ def validate_design_md_via_cli(path: str, *, timeout_s: float = 30.0) -> dict:
         }
     except OSError as e:
         return _cli_unavailable(f"designmd CLI not available; {type(e).__name__}: {e}")
+    except Exception as e:  # noqa: BLE001 — never raise; always hand back a structured result
+        return _cli_unavailable(f"designmd CLI not available; {type(e).__name__}: {e}")
 
     raw_output = _join_output(proc.stdout, proc.stderr)
     if proc.returncode != 0 and _looks_like_cli_unavailable(raw_output):
