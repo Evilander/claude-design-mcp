@@ -155,14 +155,14 @@ _PAGE_TEMPLATE = """<!doctype html>
 <meta name="generator" content="claude-design-mcp">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root{
     --bg:#0b0b0d; --fg:#f1efe9; --muted:#9b958a; --rule:#2a2a2e; --accent:#d6ff3d;
-    --serif:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+    --display:'Space Grotesk',ui-sans-serif,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--serif);font-size:15px;line-height:1.5}
+  html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--display);font-size:15px;line-height:1.5}
   header.top{position:sticky;top:0;z-index:10;background:rgba(11,11,13,.84);backdrop-filter:blur(8px);
     border-bottom:1px solid var(--rule);padding:14px 24px;display:flex;gap:24px;align-items:baseline}
   header.top h1{margin:0;font-size:14px;letter-spacing:.18em;text-transform:uppercase;font-weight:700}
