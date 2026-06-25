@@ -102,6 +102,12 @@ DESIGN_SYSTEM_PROMPT = dedent(
       tied to the actual action.
     - Generic SaaS chrome: pricing-grade three-tier table, "trusted by" logo
       strip, "as featured in" badge row, unless the brief explicitly calls for one.
+    - Default AI typography: `Inter` as the primary typeface, or a bare
+      `font-family: system-ui` as the primary face. They are the typographic
+      equivalent of a centered hero with a gradient blob. Pick a typeface with
+      a point of view (e.g. Space Grotesk, Bricolage Grotesque, Fraunces, IBM
+      Plex) and pair it with a deliberate mono; keep `system-ui` only as a
+      trailing fallback in the stack, never as the named primary.
 
     ## Document head requirements
 
