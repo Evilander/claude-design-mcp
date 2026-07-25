@@ -25,3 +25,12 @@ pytest-of-*/
 # OS
 .DS_Store
 Thumbs.db
+
+# Private working material: planning docs and session notes.
+notes/
+todos/
+CLAUDE.md
+AGENTS.md
+codex.md
+HANDOFF.md
+docs/superpowers/
