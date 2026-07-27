@@ -86,6 +86,34 @@ def test_browser_status_uses_configured_browser_path_without_dry_run(
     assert Renderer._browser_install_status() == {"ok": True, "executable": str(exe)}
 
 
+def test_browser_status_uses_default_location_without_dry_run(
+    monkeypatch,
+    tmp_path: Path,
+):
+    # Simulate a standard `playwright install chromium` (default cache dir)
+    # with no PLAYWRIGHT_BROWSERS_PATH set. The fast filesystem probe must find
+    # it via the per-OS default and never shell out to the dry-run subprocess.
+    default_root = tmp_path / "ms-playwright"
+    exe_dir = default_root / "chromium-1208" / "chrome-win64"
+    exe_dir.mkdir(parents=True)
+    exe = exe_dir / "chrome.exe"
+    exe.write_text("", encoding="utf-8")
+
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.setattr(
+        renderer_module,
+        "_default_playwright_browsers_path",
+        lambda: str(default_root),
+    )
+
+    def forbidden_run(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("dry-run should not be called when executable is present")
+
+    monkeypatch.setattr(renderer_module.subprocess, "run", forbidden_run)
+
+    assert Renderer._browser_install_status() == {"ok": True, "executable": str(exe)}
+
+
 def test_readiness_is_cached(monkeypatch):
     calls = {"browser": 0}
     Renderer.clear_readiness_cache()
