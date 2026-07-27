@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 
 import pytest
+
+if sys.version_info < (3, 11):  # pragma: no cover - exercised only on 3.10
+    from exceptiongroup import BaseExceptionGroup  # noqa: A004
 
 from claude_design.designer import DesignerError
 from claude_design.server import _tool
@@ -70,3 +74,53 @@ async def test_tool_passes_through_normal_return():
 
     out = await ok(None)
     assert out == '{"ok": true}'
+
+
+@pytest.mark.asyncio
+async def test_tool_contains_base_exception_group():
+    """The Claude Agent SDK's anyio task groups / cancel scopes raise a
+    BaseExceptionGroup on 3.11+ when a child op errors. That group is NOT an
+    Exception subclass, so an `except Exception` wrapper would let it escape
+    into the MCP server's shared request task group and tear down the whole
+    stdio transport -> every concurrent call gets `-32000: Connection closed`.
+    The wrapper must contain it as an error payload for THIS call only.
+    """
+
+    @_tool
+    async def boom(_):
+        raise BaseExceptionGroup(
+            "sdk subprocess scope",
+            [RuntimeError("internal: secret token=xyz"), asyncio.CancelledError()],
+        )
+
+    # Must NOT raise — must return a contained error payload.
+    out = json.loads(await boom(None))
+    assert "error" in out
+    # Caller must never see raw internals.
+    assert "secret token=xyz" not in out["error"]
+
+
+@pytest.mark.asyncio
+async def test_tool_reraises_genuine_cancellation():
+    """A bare CancelledError (cooperative shutdown / client disconnect) must
+    propagate, not be swallowed into a normal result."""
+
+    @_tool
+    async def cancelled(_):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled(None)
+
+
+@pytest.mark.asyncio
+async def test_tool_reraises_pure_cancellation_group():
+    """A BaseExceptionGroup that is *only* cancellation (no real error) should
+    re-raise as cancellation so cooperative shutdown still unwinds cleanly."""
+
+    @_tool
+    async def cancelled_group(_):
+        raise BaseExceptionGroup("cancel", [asyncio.CancelledError()])
+
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_group(None)

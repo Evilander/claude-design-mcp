@@ -19,6 +19,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+if sys.version_info < (3, 11):  # pragma: no cover - exercised only on 3.10
+    # BaseExceptionGroup is a builtin on 3.11+. On 3.10 use the backport that
+    # anyio (a transitive dependency) already pulls in, so the _tool wrapper
+    # can match the exception groups anyio raises from its cancel scopes.
+    from exceptiongroup import BaseExceptionGroup  # noqa: A004
+
 from mcp.server.fastmcp import FastMCP
 
 from .design_md import emit_design_md, validate_design_md_via_cli
@@ -234,7 +240,30 @@ def _tool(fn):
         except ValueError as e:
             # Most often: input model_validator rejection or path-safety reject.
             return _err(str(e))
-        except Exception as e:  # noqa: BLE001 — last resort, must not propagate
+        except asyncio.CancelledError:
+            # Genuine cooperative cancellation (server shutdown, client
+            # disconnect). Must propagate so the runtime can unwind this task —
+            # never convert it into a normal result.
+            raise
+        except BaseException as e:  # noqa: BLE001 — last resort, must not propagate
+            # Catch BaseException, not just Exception, on purpose. The Claude
+            # Agent SDK runs the `claude` subprocess inside anyio task groups
+            # and cancel scopes (e.g. `anyio.fail_after` in its version check).
+            # On Python 3.11+ those raise a *BaseExceptionGroup* when a child
+            # op is cancelled or errors — and BaseExceptionGroup is NOT a
+            # subclass of Exception. Under concurrent tool calls this group
+            # would otherwise escape this wrapper, propagate into the MCP stdio
+            # server's shared request task group, and tear down the ENTIRE
+            # transport — dropping every other in-flight call with
+            # `-32000: Connection closed`. Containing it here keeps a single
+            # bad call from killing its siblings.
+            #
+            # If the group turns out to be pure cancellation (no real error),
+            # re-raise cancellation so cooperative shutdown still works.
+            if isinstance(e, BaseExceptionGroup):
+                _cancels, real_errors = e.split(asyncio.CancelledError)
+                if real_errors is None:
+                    raise asyncio.CancelledError from e
             # Log full traceback so the operator can diagnose, but never leak
             # internals back to the caller (could include API tokens / paths).
             print(
