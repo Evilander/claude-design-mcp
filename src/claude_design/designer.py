@@ -548,7 +548,6 @@ class Designer:
         assistant_seen = False
 
         async def _consume() -> None:
-            nonlocal assistant_seen
             # Hold an explicit handle to the async generator so we can
             # aclose() it on cancellation / timeout. Without this, the
             # underlying `claude` CLI subprocess can survive the parent

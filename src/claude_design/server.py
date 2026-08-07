@@ -48,10 +48,8 @@ from .studio import (
     inject_csp,
 )
 
-# ---------------------------------------------------------------------------
 # Bootstrap — .env is loaded in claude_design/__init__.py before any submodule
 # imports so module-scope env reads (e.g. designer.DEFAULT_MODEL_FAST) see it.
-# ---------------------------------------------------------------------------
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -178,10 +176,8 @@ def _reset_singletons() -> None:
     _studio = _designer = _renderer = None
 
 
-# ---------------------------------------------------------------------------
 # Lifespan — keep the warm browser alive for the server's lifetime, and
 # tear it down + close the SQLite connection on shutdown.
-# ---------------------------------------------------------------------------
 
 
 @asynccontextmanager
@@ -209,11 +205,9 @@ async def _lifespan(_app):
                 )
 
 
-# ---------------------------------------------------------------------------
 # Tool wrapper — uniform timeout + safety net so a single bad call can never
 # kill the MCP transport. Per-tool try/except for DesignerError is still kept
 # because those produce caller-friendly messages.
-# ---------------------------------------------------------------------------
 
 
 def _tool(fn):
@@ -251,14 +245,12 @@ def _tool(fn):
     return wrapper
 
 
-# ---------------------------------------------------------------------------
 # MCP server
-# ---------------------------------------------------------------------------
 
 mcp = FastMCP("claude_design_mcp", lifespan=_lifespan)
 
 
-# ---- Tool: design_create -----------------------------------------------
+# Tool: design_create
 
 
 @mcp.tool(
@@ -323,7 +315,7 @@ async def design_create(params: DesignCreateInput) -> str:
     return _ok(_design_response(rec, draft))
 
 
-# ---- Tool: design_iterate ----------------------------------------------
+# Tool: design_iterate
 
 
 @mcp.tool(
@@ -384,7 +376,7 @@ async def design_iterate(params: DesignIterateInput) -> str:
     return _ok(_design_response(rec, draft))
 
 
-# ---- Tool: design_variants ---------------------------------------------
+# Tool: design_variants
 
 
 @mcp.tool(
@@ -499,7 +491,7 @@ async def design_variants(params: DesignVariantsInput) -> str:
     return _ok(body)
 
 
-# ---- Tool: design_render -----------------------------------------------
+# Tool: design_render
 
 
 @mcp.tool(
@@ -551,7 +543,7 @@ async def design_render(params: DesignRenderInput) -> str:
     })
 
 
-# ---- Tool: design_get --------------------------------------------------
+# Tool: design_get
 
 
 @mcp.tool(
@@ -589,7 +581,7 @@ async def design_get(params: DesignGetInput) -> str:
     return _ok(body)
 
 
-# ---- Tool: design_list -------------------------------------------------
+# Tool: design_list
 
 
 @mcp.tool(
@@ -637,7 +629,7 @@ async def design_list(params: DesignListInput) -> str:
     return out
 
 
-# ---- Tool: design_extract_system ---------------------------------------
+# Tool: design_extract_system
 
 
 @mcp.tool(
@@ -702,7 +694,7 @@ async def design_extract_system(params: DesignExtractSystemInput) -> str:
     return _ok({"system_id": sys_rec.id, **sys_rec.to_summary()})
 
 
-# ---- Tool: design_validate_design_md -----------------------------------
+# Tool: design_validate_design_md
 
 
 @mcp.tool(
@@ -739,7 +731,7 @@ async def design_validate_design_md(params: DesignValidateDesignMdInput) -> str:
     return _ok(validate_design_md_via_cli(params.design_md_path))
 
 
-# ---- Tool: design_apply_system -----------------------------------------
+# Tool: design_apply_system
 
 
 @mcp.tool(
@@ -787,7 +779,7 @@ async def design_apply_system(params: DesignApplySystemInput) -> str:
     return _ok(_design_response(rec, draft))
 
 
-# ---- Tool: design_export -----------------------------------------------
+# Tool: design_export
 
 
 @mcp.tool(
@@ -861,7 +853,7 @@ async def design_export(params: DesignExportInput) -> str:
     })
 
 
-# ---- Tool: design_preview ----------------------------------------------
+# Tool: design_preview
 
 
 @mcp.tool(
@@ -901,9 +893,7 @@ async def design_preview(params: DesignPreviewInput) -> str:
     })
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _persist_design(
@@ -1102,13 +1092,16 @@ def _demo_html(*, title: str, accent: str, body: str) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
 :root {{ color-scheme: light dark; --accent: {accent}; }}
 * {{ box-sizing: border-box; }}
 body {{
   margin: 0;
   min-height: 100vh;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
   background: #101114;
   color: #f4efe4;
 }}
@@ -1163,7 +1156,7 @@ async def _run_demo() -> dict[str, Any]:
                 "title": item["title"],
                 "summary": item["summary"],
                 "palette": item["palette"],
-                "fonts": ["Inter", "system-ui"],
+                "fonts": ["Space Grotesk", "JetBrains Mono"],
                 "tokens": {"accent": item["accent"], "radius": "8px"},
                 "moves": ["single dominant focal point", "CSS-only responsive layout"],
                 "notes": "Generated by --demo without a Claude model call.",
@@ -1505,9 +1498,7 @@ def _print_check_report(report: dict[str, Any]) -> None:
         print(f"studio init  : FAILED — {studio_init['error']}", file=sys.stderr)
 
 
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:
