@@ -553,7 +553,18 @@ class Designer:
             # aclose() it on cancellation / timeout. Without this, the
             # underlying `claude` CLI subprocess can survive the parent
             # task being cancelled — accumulating zombies over time.
-            agen = query(prompt=user, options=options)
+            # claude-agent-sdk >=0.1.80 requires STREAMING mode (an async
+            # iterable of message dicts) whenever `can_use_tool` is set;
+            # passing a bare string raises "can_use_tool callback requires
+            # streaming mode". Wrap the one-shot user prompt as a single-item
+            # async stream so the deny-callback contract is satisfied.
+            async def _prompt_stream():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": user},
+                }
+
+            agen = query(prompt=_prompt_stream(), options=options)
             try:
                 async for msg in agen:
                     if isinstance(msg, AssistantMessage):
