@@ -124,3 +124,16 @@ async def test_tool_reraises_pure_cancellation_group():
 
     with pytest.raises(asyncio.CancelledError):
         await cancelled_group(None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_signal", [KeyboardInterrupt, SystemExit])
+async def test_tool_lets_process_exits_through(exit_signal):
+    """Catching BaseException must not swallow the interpreter's own exits."""
+
+    @_tool
+    async def exiting(_):
+        raise exit_signal
+
+    with pytest.raises(exit_signal):
+        await exiting(None)

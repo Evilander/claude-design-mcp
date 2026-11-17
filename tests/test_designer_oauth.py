@@ -121,10 +121,13 @@ async def test_designer_sdk_options_are_oauth_only_and_toolless(monkeypatch):
     assert options.tools == []
     assert options.allowed_tools == []
     assert options.disallowed_tools == ["*"]
-    # can_use_tool is intentionally NOT set: in claude-agent-sdk >=0.1.81 it
-    # forces streaming-input mode (incompatible with the string prompt) and is
-    # redundant with the tools=[]/allowed_tools=[]/disallowed_tools=["*"] guards.
-    assert options.can_use_tool is None
+    assert callable(options.can_use_tool)
+    # can_use_tool needs streaming-input mode: the prompt has to arrive as an
+    # async stream holding the one user message, never as a bare string.
+    sent = [message async for message in captured["prompt"]]
+    assert [message["type"] for message in sent] == ["user"]
+    assert sent[0]["message"]["role"] == "user"
+    assert "Dashboard for OAuth design quality checks" in sent[0]["message"]["content"]
     assert options.permission_mode == "dontAsk"
     assert options.extra_args == {
         "disable-slash-commands": None,

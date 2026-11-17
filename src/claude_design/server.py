@@ -245,6 +245,10 @@ def _tool(fn):
             # disconnect). Must propagate so the runtime can unwind this task —
             # never convert it into a normal result.
             raise
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            # The process is exiting or the coroutine is being closed. Not a
+            # tool failure, and never something to turn into a result.
+            raise
         except BaseException as e:  # noqa: BLE001 — last resort, must not propagate
             # Catch BaseException, not just Exception, on purpose. The Claude
             # Agent SDK runs the `claude` subprocess inside anyio task groups
