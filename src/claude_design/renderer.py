@@ -345,6 +345,7 @@ class Renderer:
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "playwright", "install", "chromium", "--dry-run"],
+                check=False,
                 capture_output=True,
                 text=True,
                 # This spawns Playwright's bundled Node driver. Its first cold
@@ -419,8 +420,10 @@ class Renderer:
         _configure_runtime_environment()
         try:
             from playwright.async_api import (
-                async_playwright,
                 Error as PlaywrightError,
+            )
+            from playwright.async_api import (
+                async_playwright,
             )
         except ImportError:
             self._fail(
@@ -459,7 +462,7 @@ class Renderer:
                     if browser is not None:
                         try:
                             await browser.close()
-                        except Exception:  # noqa: BLE001
+                        except Exception:  # noqa: BLE001, S110
                             pass
                     self._browser = None
         except Exception as e:  # noqa: BLE001 — logged, not propagated
@@ -477,13 +480,13 @@ class Renderer:
         if self._browser is not None:
             try:
                 await self._browser.close()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             self._browser = None
         if self._pw is not None:
             try:
                 await self._pw.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             self._pw = None
 
@@ -507,6 +510,8 @@ class Renderer:
         try:
             from playwright.async_api import (
                 Error as PlaywrightError,
+            )
+            from playwright.async_api import (
                 TimeoutError as PlaywrightTimeoutError,
             )
         except ImportError:
@@ -623,7 +628,7 @@ class Renderer:
             if ctx is not None:
                 try:
                     await ctx.close()
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, S110
                     pass
 
         # Atomic publish — refuse symlinks just like studio.write_html does.

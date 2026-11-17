@@ -13,8 +13,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
-from claude_design.renderer import Renderer  # noqa: E402
-
+from claude_design.renderer import Renderer
 
 SOURCE = Path(r"B:\projects\claude\1930\out\operator-console.html")
 OUT_DIR = Path(r"B:\projects\claude\1930\out\redesign-2026-05-10")

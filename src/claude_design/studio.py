@@ -26,12 +26,13 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from html import escape as html_escape
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -473,7 +474,7 @@ class _PrePolicySanitizer(HTMLParser):
         tag_name = tag.lower()
         if tag_name != self._drop_stack[-1]:
             return
-        start, end = self._tag_extent()
+        _start, end = self._tag_extent()
         self._cursor = end
         self._drop_stack.pop()
 
@@ -687,7 +688,7 @@ class Studio:
     def __del__(self) -> None:  # pragma: no cover — best-effort cleanup
         try:
             self.close()
-        except Exception:
+        except Exception:  # noqa: S110, BLE001
             pass
 
     def _init_schema(self) -> None:

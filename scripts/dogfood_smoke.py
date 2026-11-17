@@ -27,10 +27,9 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
-from claude_design.designer import Designer  # noqa: E402
-from claude_design.renderer import Renderer  # noqa: E402
-from claude_design.studio import DesignRecord, Studio  # noqa: E402
-
+from claude_design.designer import Designer
+from claude_design.renderer import Renderer
+from claude_design.studio import DesignRecord, Studio
 
 DEFAULT_BRIEF = (
     "A 'now playing' card for a vintage 1930s radio broadcast control room. "

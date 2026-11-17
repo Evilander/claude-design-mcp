@@ -15,7 +15,6 @@ from pathlib import Path as _Path
 
 from dotenv import dotenv_values as _dotenv_values
 
-
 _ENV_KEY_PREFIX = "CLAUDE_DESIGN_"
 _EXPLICIT_ENV_FILE = (_os.environ.get("CLAUDE_DESIGN_ENV_FILE") or "").strip()
 

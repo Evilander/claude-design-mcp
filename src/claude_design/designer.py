@@ -594,7 +594,7 @@ class Designer:
             finally:
                 try:
                     await agen.aclose()
-                except Exception:  # noqa: BLE001 — best-effort cleanup
+                except Exception:  # noqa: BLE001, S110 — best-effort cleanup
                     pass
 
         async def _handle_assistant(msg: AssistantMessage) -> None:

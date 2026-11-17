@@ -9,7 +9,6 @@ from pathlib import Path
 
 from claude_design import server
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 

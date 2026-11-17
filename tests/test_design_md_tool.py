@@ -7,8 +7,7 @@ import time
 
 import pytest
 
-import claude_design.design_md as design_md
-import claude_design.server as server
+from claude_design import design_md, server
 from claude_design.models import DesignValidateDesignMdInput
 
 
@@ -19,7 +18,7 @@ async def test_validate_design_md_tool_returns_ok_true_when_cli_succeeds(
     path = tmp_path / "DESIGN.md"
     path.write_text("# DESIGN.md\n", encoding="utf-8")
 
-    def fake_run(*args, **kwargs):  # noqa: ARG001
+    def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
             args=["npx"],
             returncode=0,
@@ -46,7 +45,7 @@ def test_validate_design_md_via_cli_returns_null_when_npx_missing(monkeypatch, t
     path = tmp_path / "DESIGN.md"
     path.write_text("# DESIGN.md\n", encoding="utf-8")
 
-    def fake_run(*args, **kwargs):  # noqa: ARG001
+    def fake_run(*args, **kwargs):
         raise FileNotFoundError("npx")
 
     monkeypatch.setattr(design_md.subprocess, "run", fake_run)
@@ -64,7 +63,7 @@ def test_validate_design_md_via_cli_extracts_errors_and_wcag(monkeypatch, tmp_pa
     path = tmp_path / "DESIGN.md"
     path.write_text("# DESIGN.md\n", encoding="utf-8")
 
-    def fake_run(*args, **kwargs):  # noqa: ARG001
+    def fake_run(*args, **kwargs):
         return subprocess.CompletedProcess(
             args=["npx"],
             returncode=1,
@@ -104,7 +103,7 @@ async def test_validate_design_md_tool_does_not_block_event_loop(monkeypatch, tm
 
     # Simulate a lint that takes a while (the real cost is the first-run npx
     # fetch). This is a *blocking* sleep, exactly like subprocess.run.
-    def slow_blocking_run(*args, **kwargs):  # noqa: ARG001
+    def slow_blocking_run(*args, **kwargs):
         time.sleep(0.4)
         return subprocess.CompletedProcess(
             args=["npx"], returncode=0, stdout="DESIGN.md lint passed\n", stderr=""
@@ -140,7 +139,7 @@ async def test_validate_design_md_tool_returns_structured_result_on_unexpected_e
     path = tmp_path / "DESIGN.md"
     path.write_text("# DESIGN.md\n", encoding="utf-8")
 
-    def exploding_run(*args, **kwargs):  # noqa: ARG001
+    def exploding_run(*args, **kwargs):
         raise RuntimeError("unexpected npx explosion")
 
     monkeypatch.setattr(design_md.subprocess, "run", exploding_run)

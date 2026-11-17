@@ -13,7 +13,7 @@ import sys
 import pytest
 
 if sys.version_info < (3, 11):  # pragma: no cover - exercised only on 3.10
-    from exceptiongroup import BaseExceptionGroup  # noqa: A004
+    from exceptiongroup import BaseExceptionGroup
 
 from claude_design.designer import DesignerError
 from claude_design.server import _tool

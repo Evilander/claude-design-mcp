@@ -9,9 +9,9 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
 from claude_design import designer as designer_module
 from claude_design.designer import (
+    _ASSISTANT_ERROR_MESSAGES,
     Designer,
     DesignerError,
-    _ASSISTANT_ERROR_MESSAGES,
 )
 from claude_design.prompts import DESIGN_SYSTEM_PROMPT
 

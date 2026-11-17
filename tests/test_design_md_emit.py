@@ -8,7 +8,6 @@ import pytest
 from claude_design.design_md import emit_design_md, validate_design_md_via_cli
 from claude_design.studio import SystemRecord
 
-
 _WHEN = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
 _HEADINGS = [
     "## Overview",

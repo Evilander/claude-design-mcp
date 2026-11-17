@@ -78,7 +78,7 @@ def test_browser_status_uses_configured_browser_path_without_dry_run(
     exe.write_text("", encoding="utf-8")
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
 
-    def forbidden_run(*args, **kwargs):  # noqa: ARG001
+    def forbidden_run(*args, **kwargs):
         raise AssertionError("dry-run should not be called when executable is present")
 
     monkeypatch.setattr(renderer_module.subprocess, "run", forbidden_run)
@@ -106,7 +106,7 @@ def test_browser_status_uses_default_location_without_dry_run(
         lambda: str(default_root),
     )
 
-    def forbidden_run(*args, **kwargs):  # noqa: ARG001
+    def forbidden_run(*args, **kwargs):
         raise AssertionError("dry-run should not be called when executable is present")
 
     monkeypatch.setattr(renderer_module.subprocess, "run", forbidden_run)
@@ -124,7 +124,7 @@ def test_readiness_is_cached(monkeypatch):
         lambda apply=False: {"temp_dir": {"ok": True}, "browsers_path": None},
     )
 
-    def browser_status(*, candidate_path=None):  # noqa: ARG001
+    def browser_status(*, candidate_path=None):
         calls["browser"] += 1
         return {"ok": True, "executable": "chromium"}
 

@@ -29,10 +29,9 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
-from claude_design.designer import Designer  # noqa: E402
-from claude_design.renderer import Renderer  # noqa: E402
-from claude_design.studio import DesignRecord, Studio  # noqa: E402
-
+from claude_design.designer import Designer
+from claude_design.renderer import Renderer
+from claude_design.studio import DesignRecord, Studio
 
 PROJECT_ROOT = Path(r"B:\projects\claude\1930")
 OUT_DIR = PROJECT_ROOT / "out" / "redesign-2026-05-10"

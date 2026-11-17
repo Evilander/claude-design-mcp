@@ -14,11 +14,10 @@ from __future__ import annotations
 import html as _html
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from .studio import DesignRecord, Studio, SystemRecord, _atomic_write_text, inject_csp
-
 
 _INDEX_FILENAME = "_index.html"
 

@@ -30,7 +30,7 @@ def _draft(title: str) -> DesignDraft:
 
 @pytest.mark.asyncio
 async def test_designer_variants_preserves_partial_successes(monkeypatch):
-    async def fake_call(self, *, model, user):  # noqa: ARG001
+    async def fake_call(self, *, model, user):
         if "variant 2 of 3" in user:
             raise DesignerError("rate limited")
         return _draft("variant")
@@ -53,7 +53,7 @@ async def test_designer_variants_preserves_partial_successes(monkeypatch):
 @pytest.mark.asyncio
 async def test_design_variants_persists_successes_and_reports_failures(monkeypatch):
     class FakeDesigner:
-        async def variants(self, **kwargs):  # noqa: ARG002
+        async def variants(self, **kwargs):
             return [
                 VariantDraftResult(index=0, draft=_draft("first")),
                 VariantDraftResult(index=1, error="DesignerError: rate limited"),
@@ -80,7 +80,7 @@ async def test_design_variants_persists_successes_and_reports_failures(monkeypat
 @pytest.mark.asyncio
 async def test_design_variants_reports_all_failed_batches(monkeypatch):
     class FakeDesigner:
-        async def variants(self, **kwargs):  # noqa: ARG002
+        async def variants(self, **kwargs):
             return [
                 VariantDraftResult(index=0, error="DesignerError: first failed"),
                 VariantDraftResult(index=1, error="DesignerError: second failed"),

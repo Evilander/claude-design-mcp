@@ -12,7 +12,6 @@ from claude_design.models import (
     DesignVariantsInput,
 )
 
-
 _VALID_ID = "abc123def456"
 
 

@@ -171,7 +171,7 @@ class DesignVariantsInput(BaseModel):
     auto_render: bool | None = Field(default=None, description=_AUTO_RENDER_DESC)
 
     @model_validator(mode="after")
-    def _require_one(self) -> "DesignVariantsInput":
+    def _require_one(self) -> DesignVariantsInput:
         if not self.design_id and not self.brief:
             raise ValueError("Provide either design_id (to branch) or brief (to start fresh).")
         return self
@@ -316,7 +316,7 @@ class DesignExportInput(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _require_one(self) -> "DesignExportInput":
+    def _require_one(self) -> DesignExportInput:
         if not self.design_id and not self.system_id:
             raise ValueError("Provide design_id or system_id.")
         if self.design_id and self.system_id:

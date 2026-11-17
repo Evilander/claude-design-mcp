@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from claude_design.designer import _extract_html_block, _extract_json_block
 
-
 GOOD_RESPONSE = """\
 Here you go:
 

@@ -23,21 +23,21 @@ if sys.version_info < (3, 11):  # pragma: no cover - exercised only on 3.10
     # BaseExceptionGroup is a builtin on 3.11+. On 3.10 use the backport that
     # anyio (a transitive dependency) already pulls in, so the _tool wrapper
     # can match the exception groups anyio raises from its cancel scopes.
-    from exceptiongroup import BaseExceptionGroup  # noqa: A004
+    from exceptiongroup import BaseExceptionGroup
 
 from mcp.server.fastmcp import FastMCP
 
 from .design_md import emit_design_md, validate_design_md_via_cli
-from .designer import Designer, DesignDraft, DesignerError, auth_override_state
+from .designer import DesignDraft, Designer, DesignerError, auth_override_state
 from .models import (
     DesignApplySystemInput,
     DesignCreateInput,
-    DesignMdFormat,
     DesignExportInput,
     DesignExtractSystemInput,
     DesignGetInput,
     DesignIterateInput,
     DesignListInput,
+    DesignMdFormat,
     DesignPreviewInput,
     DesignRenderInput,
     DesignValidateDesignMdInput,
@@ -178,7 +178,7 @@ def _reset_singletons() -> None:
     if _studio is not None:
         try:
             _studio.close()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
     Renderer.clear_readiness_cache()
     _studio = _designer = _renderer = None
@@ -249,7 +249,7 @@ def _tool(fn):
             # The process is exiting or the coroutine is being closed. Not a
             # tool failure, and never something to turn into a result.
             raise
-        except BaseException as e:  # noqa: BLE001 — last resort, must not propagate
+        except BaseException as e:
             # Catch BaseException, not just Exception, on purpose. The Claude
             # Agent SDK runs the `claude` subprocess inside anyio task groups
             # and cancel scopes (e.g. `anyio.fail_after` in its version check).
@@ -1438,6 +1438,7 @@ def _claude_cli_status() -> dict[str, Any]:
     try:
         out = subprocess.run(
             [found, "--version"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=10,
