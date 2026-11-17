@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,13 +34,10 @@ def _encode_message(body: dict[str, Any]) -> bytes:
     return (json.dumps(body, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def _decode_messages(stdout: bytes) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-    for line in stdout.decode("utf-8").splitlines():
-        if not line.strip():
-            continue
-        messages.append(json.loads(line))
-    return messages
+def _pump(stream, lines: queue.Queue) -> None:
+    for line in stream:
+        lines.put(line)
+    lines.put(None)
 
 
 def main() -> int:
@@ -54,6 +54,8 @@ def main() -> int:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    lines: queue.Queue = queue.Queue()
+    threading.Thread(target=_pump, args=(proc.stdout, lines), daemon=True).start()
     try:
         request = b"".join(
             [
@@ -80,11 +82,27 @@ def main() -> int:
                 ),
             ]
         )
-        stdout, stderr = proc.communicate(input=request, timeout=15)
-        if proc.returncode not in (0, None):
-            raise RuntimeError(stderr.decode("utf-8", errors="replace"))
-        messages = _decode_messages(stdout)
-        by_id = {message.get("id"): message for message in messages if "id" in message}
+        proc.stdin.write(request)
+        proc.stdin.flush()
+        # stdin stays open until tools/list is answered. Closing it straight
+        # after the writes lets the server read EOF and exit before it replies,
+        # which made this smoke fail now and then.
+        by_id: dict[Any, dict[str, Any]] = {}
+        seen: list[bytes] = []
+        deadline = time.monotonic() + 15
+        while 2 not in by_id:
+            try:
+                line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise RuntimeError(f"MCP stdio smoke timed out. stdout={b''.join(seen)!r}") from None
+            if line is None:
+                break
+            seen.append(line)
+            if line.strip():
+                message = json.loads(line)
+                if "id" in message:
+                    by_id[message["id"]] = message
+        stdout = b"".join(seen)
         init = by_id.get(1)
         if init is None:
             raise RuntimeError(f"initialize response missing. stdout={stdout!r}")
@@ -101,20 +119,15 @@ def main() -> int:
             raise RuntimeError(f"tools/list missing expected tools: {missing}")
         print(json.dumps({"ok": True, "tool_count": len(names), "tools": sorted(names)}))
         return 0
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        raise RuntimeError(
-            "MCP stdio smoke timed out. "
-            f"stdout={stdout!r} stderr={stderr.decode('utf-8', errors='replace')}"
-        )
     finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
 
 
 if __name__ == "__main__":
