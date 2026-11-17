@@ -121,7 +121,10 @@ async def test_designer_sdk_options_are_oauth_only_and_toolless(monkeypatch):
     assert options.tools == []
     assert options.allowed_tools == []
     assert options.disallowed_tools == ["*"]
-    assert callable(options.can_use_tool)
+    # can_use_tool is intentionally NOT set: in claude-agent-sdk >=0.1.81 it
+    # forces streaming-input mode (incompatible with the string prompt) and is
+    # redundant with the tools=[]/allowed_tools=[]/disallowed_tools=["*"] guards.
+    assert options.can_use_tool is None
     assert options.permission_mode == "dontAsk"
     assert options.extra_args == {
         "disable-slash-commands": None,
