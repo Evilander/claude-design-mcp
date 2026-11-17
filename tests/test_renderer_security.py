@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 from claude_design import renderer as renderer_module
@@ -117,6 +119,9 @@ def test_browser_status_uses_default_location_without_dry_run(
 def test_readiness_is_cached(monkeypatch):
     calls = {"browser": 0}
     Renderer.clear_readiness_cache()
+    # readiness() reports "not ready" before it reaches the browser probe when
+    # the optional render extra is missing; the cache is what is under test.
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
 
     monkeypatch.setattr(
         renderer_module,

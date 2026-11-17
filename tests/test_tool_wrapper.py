@@ -15,6 +15,7 @@ import pytest
 if sys.version_info < (3, 11):  # pragma: no cover - exercised only on 3.10
     from exceptiongroup import BaseExceptionGroup
 
+from claude_design import server
 from claude_design.designer import DesignerError
 from claude_design.server import _tool
 
@@ -128,8 +129,16 @@ async def test_tool_reraises_pure_cancellation_group():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("exit_signal", [KeyboardInterrupt, SystemExit])
-async def test_tool_lets_process_exits_through(exit_signal):
+async def test_tool_lets_process_exits_through(monkeypatch, exit_signal):
     """Catching BaseException must not swallow the interpreter's own exits."""
+
+    # Before 3.12, wait_for runs its coroutine in a task of its own, and asyncio
+    # re-raises these two out of the whole event loop from there. Await directly
+    # so the test exercises the wrapper's handlers and nothing else.
+    async def direct(awaitable, timeout):
+        return await awaitable
+
+    monkeypatch.setattr(server.asyncio, "wait_for", direct)
 
     @_tool
     async def exiting(_):
